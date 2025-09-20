@@ -4,8 +4,9 @@ import fetch from "node-fetch";
 import { OpenAI } from "openai";
 import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
-import paypalClient from "./paypal-config.js";
-import { OrdersController } from '@paypal/paypal-server-sdk';
+// import paypalClient from "./paypal-config.js";
+// import pkg from '@paypal/paypal-server-sdk';
+// const { OrdersController } = pkg;
 dotenv.config();
 
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -186,6 +187,11 @@ Por favor, genera una interpretación de tarot siguiendo las reglas y el estilo 
 // PAYPAL PAYMENT ENDPOINTS
 // ========================================
 
+// Test endpoint
+app.get("/api/test", (req, res) => {
+  res.json({ message: "Test endpoint working!" });
+});
+
 // Get subscription plans
 app.get("/api/subscription-plans", async (req, res) => {
   try {
@@ -225,7 +231,7 @@ app.post("/api/payments/create-order", async (req, res) => {
     }
 
     // Create PayPal order
-    const ordersController = new OrdersController(paypalClient);
+    // const ordersController = new OrdersController(paypalClient);
 
     const orderRequest = {
       intent: 'CAPTURE',
@@ -246,14 +252,22 @@ app.post("/api/payments/create-order", async (req, res) => {
       }
     };
 
-    const response = await ordersController.ordersCreate({
-      body: orderRequest,
-      prefer: 'return=representation'
-    });
+    // const response = await ordersController.ordersCreate({
+    //   body: orderRequest,
+    //   prefer: 'return=representation'
+    // });
 
-    if (response.statusCode !== 201) {
-      throw new Error(`PayPal API error: ${response.statusCode}`);
-    }
+    // if (response.statusCode !== 201) {
+    //   throw new Error(`PayPal API error: ${response.statusCode}`);
+    // }
+
+    // Mock response for testing
+    const response = {
+      result: {
+        id: "MOCK_ORDER_" + Date.now(),
+        links: [{ rel: 'approve', href: 'https://sandbox.paypal.com/checkoutnow?token=MOCK_TOKEN' }]
+      }
+    };
 
     // Store order in database
     const { error: dbError } = await supabase
@@ -291,17 +305,29 @@ app.post("/api/payments/capture-order", async (req, res) => {
     }
 
     // Capture the order
-    const ordersController = new OrdersController(paypalClient);
-    const response = await ordersController.ordersCapture({
-      id: orderId,
-      prefer: 'return=representation'
-    });
+    // const ordersController = new OrdersController(paypalClient);
+    // const response = await ordersController.ordersCapture({
+    //   id: orderId,
+    //   prefer: 'return=representation'
+    // });
 
-    if (response.statusCode !== 201) {
-      throw new Error(`PayPal capture error: ${response.statusCode}`);
-    }
+    // if (response.statusCode !== 201) {
+    //   throw new Error(`PayPal capture error: ${response.statusCode}`);
+    // }
 
-    const captureData = response.result;
+    // Mock capture response for testing
+    const captureData = {
+      status: 'COMPLETED',
+      purchase_units: [{
+        custom_id: `${userId}_1`,
+        payments: {
+          captures: [{
+            id: "MOCK_CAPTURE_" + Date.now(),
+            custom_id: `${userId}_1`
+          }]
+        }
+      }]
+    };
 
     if (captureData.status === 'COMPLETED') {
       // Extract plan info from custom_id
