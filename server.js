@@ -4,6 +4,8 @@ import fetch from "node-fetch";
 import { OpenAI } from "openai";
 import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
+import paypalClient from "./paypal-config.js";
+import { OrdersController } from '@paypal/paypal-server-sdk';
 dotenv.config();
 
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -177,6 +179,260 @@ Por favor, genera una interpretación de tarot siguiendo las reglas y el estilo 
   } catch (err) {
     console.error("Error al contactar con OpenAI:", err);
     res.status(500).json({ error: "No se pudo obtener la interpretación." });
+  }
+});
+
+// ========================================
+// PAYPAL PAYMENT ENDPOINTS
+// ========================================
+
+// Get subscription plans
+app.get("/api/subscription-plans", async (req, res) => {
+  try {
+    const { data: plans, error } = await supabase
+      .from('subscription_plans')
+      .select('*')
+      .eq('is_active', true)
+      .order('price', { ascending: true });
+
+    if (error) throw error;
+
+    res.json({ plans });
+  } catch (err) {
+    console.error("Error fetching subscription plans:", err);
+    res.status(500).json({ error: "No se pudieron obtener los planes." });
+  }
+});
+
+// Create PayPal order
+app.post("/api/payments/create-order", async (req, res) => {
+  try {
+    const { planId, userId } = req.body;
+
+    if (!planId || !userId) {
+      return res.status(400).json({ error: "planId y userId son requeridos" });
+    }
+
+    // Get plan details
+    const { data: plan, error: planError } = await supabase
+      .from('subscription_plans')
+      .select('*')
+      .eq('id', planId)
+      .single();
+
+    if (planError || !plan) {
+      return res.status(404).json({ error: "Plan no encontrado" });
+    }
+
+    // Create PayPal order
+    const ordersController = new OrdersController(paypalClient);
+
+    const orderRequest = {
+      intent: 'CAPTURE',
+      purchase_units: [{
+        amount: {
+          currency_code: 'USD',
+          value: plan.price.toFixed(2)
+        },
+        description: plan.description,
+        custom_id: `${userId}_${planId}`,
+        invoice_id: `bottarot_${Date.now()}_${userId}`
+      }],
+      application_context: {
+        return_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/checkout-success`,
+        cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/checkout`,
+        brand_name: 'Bottarot - Oráculo IA',
+        user_action: 'PAY_NOW'
+      }
+    };
+
+    const response = await ordersController.ordersCreate({
+      body: orderRequest,
+      prefer: 'return=representation'
+    });
+
+    if (response.statusCode !== 201) {
+      throw new Error(`PayPal API error: ${response.statusCode}`);
+    }
+
+    // Store order in database
+    const { error: dbError } = await supabase
+      .from('payment_transactions')
+      .insert({
+        user_id: userId,
+        paypal_order_id: response.result.id,
+        amount: plan.price,
+        status: 'pending',
+        transaction_data: response.result
+      });
+
+    if (dbError) {
+      console.error("Error storing transaction:", dbError);
+    }
+
+    res.json({
+      orderId: response.result.id,
+      approvalUrl: response.result.links.find(link => link.rel === 'approve')?.href
+    });
+
+  } catch (err) {
+    console.error("Error creating PayPal order:", err);
+    res.status(500).json({ error: "No se pudo crear la orden de pago." });
+  }
+});
+
+// Capture PayPal order
+app.post("/api/payments/capture-order", async (req, res) => {
+  try {
+    const { orderId, userId } = req.body;
+
+    if (!orderId || !userId) {
+      return res.status(400).json({ error: "orderId y userId son requeridos" });
+    }
+
+    // Capture the order
+    const ordersController = new OrdersController(paypalClient);
+    const response = await ordersController.ordersCapture({
+      id: orderId,
+      prefer: 'return=representation'
+    });
+
+    if (response.statusCode !== 201) {
+      throw new Error(`PayPal capture error: ${response.statusCode}`);
+    }
+
+    const captureData = response.result;
+
+    if (captureData.status === 'COMPLETED') {
+      // Extract plan info from custom_id
+      const customId = captureData.purchase_units[0].payments.captures[0].custom_id || captureData.purchase_units[0].custom_id;
+      const [captureUserId, planId] = customId.split('_');
+
+      // Get plan details
+      const { data: plan } = await supabase
+        .from('subscription_plans')
+        .select('*')
+        .eq('id', planId)
+        .single();
+
+      if (plan) {
+        // Calculate subscription dates
+        const startDate = new Date();
+        const endDate = new Date();
+        endDate.setDate(startDate.getDate() + plan.duration_days);
+
+        // Create or update subscription
+        const { error: subError } = await supabase
+          .from('user_subscriptions')
+          .upsert({
+            user_id: userId,
+            plan_id: planId,
+            paypal_order_id: orderId,
+            status: 'active',
+            start_date: startDate.toISOString(),
+            end_date: endDate.toISOString(),
+            auto_renew: true
+          });
+
+        if (subError) {
+          console.error("Error creating subscription:", subError);
+        }
+      }
+
+      // Update transaction record
+      const { error: updateError } = await supabase
+        .from('payment_transactions')
+        .update({
+          status: 'completed',
+          paypal_payment_id: captureData.purchase_units[0].payments.captures[0].id,
+          transaction_data: captureData
+        })
+        .eq('paypal_order_id', orderId);
+
+      if (updateError) {
+        console.error("Error updating transaction:", updateError);
+      }
+
+      res.json({
+        success: true,
+        transactionId: captureData.purchase_units[0].payments.captures[0].id,
+        subscriptionActive: true
+      });
+
+    } else {
+      res.status(400).json({ error: "Pago no completado" });
+    }
+
+  } catch (err) {
+    console.error("Error capturing PayPal order:", err);
+    res.status(500).json({ error: "No se pudo procesar el pago." });
+  }
+});
+
+// Get user subscription status
+app.get("/api/user/subscription/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const { data, error } = await supabase
+      .rpc('get_user_subscription_info', { user_uuid: userId });
+
+    if (error) throw error;
+
+    res.json(data[0] || {
+      has_active_subscription: false,
+      plan_name: 'Gratuito',
+      questions_remaining: 1,
+      subscription_end_date: null,
+      can_ask_question: true
+    });
+
+  } catch (err) {
+    console.error("Error getting subscription info:", err);
+    res.status(500).json({ error: "No se pudo obtener la información de suscripción." });
+  }
+});
+
+// Check if user can ask question
+app.get("/api/user/can-ask/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+
+    const { data, error } = await supabase
+      .rpc('can_user_ask_question', { user_uuid: userId });
+
+    if (error) throw error;
+
+    res.json({ canAsk: data });
+
+  } catch (err) {
+    console.error("Error checking question permission:", err);
+    res.status(500).json({ error: "No se pudo verificar los permisos." });
+  }
+});
+
+// Record user question
+app.post("/api/user/question", async (req, res) => {
+  try {
+    const { userId, question, response, cards, isPremium = false } = req.body;
+
+    const { error } = await supabase
+      .from('user_questions')
+      .insert({
+        user_id: userId,
+        question,
+        response,
+        cards_used: cards || [],
+        is_premium: isPremium
+      });
+
+    if (error) throw error;
+
+    res.json({ success: true });
+
+  } catch (err) {
+    console.error("Error recording question:", err);
+    res.status(500).json({ error: "No se pudo registrar la pregunta." });
   }
 });
 
