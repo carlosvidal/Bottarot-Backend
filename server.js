@@ -419,9 +419,46 @@ app.post("/api/payments/capture-order", async (req, res) => {
 
     const captureData = response.result;
 
+    // Debug logging to inspect actual PayPal response structure
+    console.log('💰 PayPal capture response structure:');
+    console.log('Full captureData:', JSON.stringify(captureData, null, 2));
+    console.log('captureData.status:', captureData.status);
+    console.log('captureData.purchase_units exists:', !!captureData.purchase_units);
+    console.log('captureData.purchase_units length:', captureData.purchase_units?.length);
+    if (captureData.purchase_units && captureData.purchase_units[0]) {
+      console.log('First purchase_unit:', JSON.stringify(captureData.purchase_units[0], null, 2));
+    }
+
     if (captureData.status === 'COMPLETED') {
-      // Extract plan info from custom_id
-      const customId = captureData.purchase_units[0].payments.captures[0].custom_id || captureData.purchase_units[0].custom_id;
+      // Safely extract plan info from custom_id with proper error handling
+      let customId = null;
+
+      try {
+        // Try different possible locations for custom_id
+        if (captureData.purchase_units &&
+            captureData.purchase_units[0] &&
+            captureData.purchase_units[0].payments &&
+            captureData.purchase_units[0].payments.captures &&
+            captureData.purchase_units[0].payments.captures[0] &&
+            captureData.purchase_units[0].payments.captures[0].custom_id) {
+          customId = captureData.purchase_units[0].payments.captures[0].custom_id;
+        } else if (captureData.purchase_units &&
+                   captureData.purchase_units[0] &&
+                   captureData.purchase_units[0].custom_id) {
+          customId = captureData.purchase_units[0].custom_id;
+        } else if (captureData.custom_id) {
+          customId = captureData.custom_id;
+        }
+
+        console.log('💰 Extracted customId:', customId);
+
+        if (!customId) {
+          throw new Error('Could not find custom_id in PayPal response');
+        }
+      } catch (err) {
+        console.error('💰 Error extracting custom_id:', err);
+        throw new Error('Invalid PayPal response structure');
+      }
       const [captureUserId, planId] = customId.split('_');
 
       // Get plan details
