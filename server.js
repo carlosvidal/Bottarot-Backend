@@ -386,7 +386,7 @@ app.post("/api/payments/capture-order", async (req, res) => {
           .from('payment_transactions')
           .update({
             status: 'completed',
-            paypal_payment_id: captureData.purchase_units[0].payments.captures[0].id,
+            paypal_payment_id: captureData.purchaseUnits[0].payments.captures[0].id,
             transaction_data: captureData
           })
           .eq('paypal_order_id', orderId);
@@ -397,7 +397,7 @@ app.post("/api/payments/capture-order", async (req, res) => {
 
         return res.json({
           success: true,
-          transactionId: captureData.purchase_units[0].payments.captures[0].id,
+          transactionId: captureData.purchaseUnits[0].payments.captures[0].id,
           subscriptionActive: true,
           note: "Mock PayPal capture - configure real credentials in .env"
         });
@@ -497,7 +497,7 @@ app.post("/api/payments/capture-order", async (req, res) => {
         .from('payment_transactions')
         .update({
           status: 'completed',
-          paypal_payment_id: captureData.purchase_units[0].payments.captures[0].id,
+          paypal_payment_id: captureData.purchaseUnits[0].payments.captures[0].id,
           transaction_data: captureData
         })
         .eq('paypal_order_id', orderId);
@@ -508,7 +508,7 @@ app.post("/api/payments/capture-order", async (req, res) => {
 
       res.json({
         success: true,
-        transactionId: captureData.purchase_units[0].payments.captures[0].id,
+        transactionId: captureData.purchaseUnits[0].payments.captures[0].id,
         subscriptionActive: true
       });
 
