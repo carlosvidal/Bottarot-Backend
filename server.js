@@ -423,40 +423,40 @@ app.post("/api/payments/capture-order", async (req, res) => {
     console.log('💰 PayPal capture response structure:');
     console.log('Full captureData:', JSON.stringify(captureData, null, 2));
     console.log('captureData.status:', captureData.status);
-    console.log('captureData.purchase_units exists:', !!captureData.purchase_units);
-    console.log('captureData.purchase_units length:', captureData.purchase_units?.length);
-    if (captureData.purchase_units && captureData.purchase_units[0]) {
-      console.log('First purchase_unit:', JSON.stringify(captureData.purchase_units[0], null, 2));
+    console.log('captureData.purchaseUnits exists:', !!captureData.purchaseUnits);
+    console.log('captureData.purchaseUnits length:', captureData.purchaseUnits?.length);
+    if (captureData.purchaseUnits && captureData.purchaseUnits[0]) {
+      console.log('First purchaseUnit:', JSON.stringify(captureData.purchaseUnits[0], null, 2));
     }
 
     if (captureData.status === 'COMPLETED') {
-      // Safely extract plan info from custom_id with proper error handling
+      // Safely extract plan info from customId with proper error handling
       let customId = null;
 
       try {
-        // Try different possible locations for custom_id
-        if (captureData.purchase_units &&
-            captureData.purchase_units[0] &&
-            captureData.purchase_units[0].payments &&
-            captureData.purchase_units[0].payments.captures &&
-            captureData.purchase_units[0].payments.captures[0] &&
-            captureData.purchase_units[0].payments.captures[0].custom_id) {
-          customId = captureData.purchase_units[0].payments.captures[0].custom_id;
-        } else if (captureData.purchase_units &&
-                   captureData.purchase_units[0] &&
-                   captureData.purchase_units[0].custom_id) {
-          customId = captureData.purchase_units[0].custom_id;
-        } else if (captureData.custom_id) {
-          customId = captureData.custom_id;
+        // Try different possible locations for customId - PayPal uses camelCase, not snake_case
+        if (captureData.purchaseUnits &&
+            captureData.purchaseUnits[0] &&
+            captureData.purchaseUnits[0].payments &&
+            captureData.purchaseUnits[0].payments.captures &&
+            captureData.purchaseUnits[0].payments.captures[0] &&
+            captureData.purchaseUnits[0].payments.captures[0].customId) {
+          customId = captureData.purchaseUnits[0].payments.captures[0].customId;
+        } else if (captureData.purchaseUnits &&
+                   captureData.purchaseUnits[0] &&
+                   captureData.purchaseUnits[0].customId) {
+          customId = captureData.purchaseUnits[0].customId;
+        } else if (captureData.customId) {
+          customId = captureData.customId;
         }
 
         console.log('💰 Extracted customId:', customId);
 
         if (!customId) {
-          throw new Error('Could not find custom_id in PayPal response');
+          throw new Error('Could not find customId in PayPal response');
         }
       } catch (err) {
-        console.error('💰 Error extracting custom_id:', err);
+        console.error('💰 Error extracting customId:', err);
         throw new Error('Invalid PayPal response structure');
       }
       const [captureUserId, planId] = customId.split('_');
