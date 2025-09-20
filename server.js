@@ -4,9 +4,9 @@ import fetch from "node-fetch";
 import { OpenAI } from "openai";
 import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
-// import paypalClient from "./paypal-config.js";
-// import pkg from '@paypal/paypal-server-sdk';
-// const { OrdersController } = pkg;
+import paypalClient from "./paypal-config.js";
+import pkg from '@paypal/paypal-server-sdk';
+const { OrdersController } = pkg;
 dotenv.config();
 
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -230,44 +230,68 @@ app.post("/api/payments/create-order", async (req, res) => {
       return res.status(404).json({ error: "Plan no encontrado" });
     }
 
+    // Check if PayPal credentials are configured
+    if (!process.env.PAYPAL_CLIENT_ID || process.env.PAYPAL_CLIENT_ID === 'YOUR_PAYPAL_CLIENT_ID_SANDBOX') {
+      // Use mock response if credentials not configured
+      const mockResponse = {
+        result: {
+          id: "MOCK_ORDER_" + Date.now(),
+          links: [{ rel: 'approve', href: 'https://sandbox.paypal.com/checkoutnow?token=MOCK_TOKEN' }]
+        }
+      };
+
+      // Store mock order in database
+      const { error: dbError } = await supabase
+        .from('payment_transactions')
+        .insert({
+          user_id: userId,
+          paypal_order_id: mockResponse.result.id,
+          amount: plan.price,
+          status: 'pending',
+          transaction_data: mockResponse.result
+        });
+
+      if (dbError) {
+        console.error("Error storing transaction:", dbError);
+      }
+
+      return res.json({
+        orderId: mockResponse.result.id,
+        approvalUrl: mockResponse.result.links.find(link => link.rel === 'approve')?.href,
+        note: "Mock PayPal response - configure real credentials in .env"
+      });
+    }
+
     // Create PayPal order
-    // const ordersController = new OrdersController(paypalClient);
+    const ordersController = new OrdersController(paypalClient);
 
     const orderRequest = {
       intent: 'CAPTURE',
-      purchase_units: [{
+      purchaseUnits: [{
         amount: {
-          currency_code: 'USD',
+          currencyCode: 'USD',
           value: plan.price.toFixed(2)
         },
         description: plan.description,
-        custom_id: `${userId}_${planId}`,
-        invoice_id: `bottarot_${Date.now()}_${userId}`
+        customId: `${userId}_${planId}`,
+        invoiceId: `bottarot_${Date.now()}_${userId}`
       }],
-      application_context: {
-        return_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/checkout-success`,
-        cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/checkout`,
-        brand_name: 'Bottarot - Oráculo IA',
-        user_action: 'PAY_NOW'
+      applicationContext: {
+        returnUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/checkout-success`,
+        cancelUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/checkout`,
+        brandName: 'Bottarot - Oráculo IA',
+        userAction: 'PAY_NOW'
       }
     };
 
-    // const response = await ordersController.ordersCreate({
-    //   body: orderRequest,
-    //   prefer: 'return=representation'
-    // });
+    const response = await ordersController.createOrder({
+      body: orderRequest,
+      prefer: 'return=representation'
+    });
 
-    // if (response.statusCode !== 201) {
-    //   throw new Error(`PayPal API error: ${response.statusCode}`);
-    // }
-
-    // Mock response for testing
-    const response = {
-      result: {
-        id: "MOCK_ORDER_" + Date.now(),
-        links: [{ rel: 'approve', href: 'https://sandbox.paypal.com/checkoutnow?token=MOCK_TOKEN' }]
-      }
-    };
+    if (response.statusCode !== 201) {
+      throw new Error(`PayPal API error: ${response.statusCode}`);
+    }
 
     // Store order in database
     const { error: dbError } = await supabase
@@ -304,30 +328,96 @@ app.post("/api/payments/capture-order", async (req, res) => {
       return res.status(400).json({ error: "orderId y userId son requeridos" });
     }
 
-    // Capture the order
-    // const ordersController = new OrdersController(paypalClient);
-    // const response = await ordersController.ordersCapture({
-    //   id: orderId,
-    //   prefer: 'return=representation'
-    // });
+    // Check if PayPal credentials are configured
+    if (!process.env.PAYPAL_CLIENT_ID || process.env.PAYPAL_CLIENT_ID === 'YOUR_PAYPAL_CLIENT_ID_SANDBOX') {
+      // Use mock response if credentials not configured
+      const captureData = {
+        status: 'COMPLETED',
+        purchase_units: [{
+          custom_id: `${userId}_1`,
+          payments: {
+            captures: [{
+              id: "MOCK_CAPTURE_" + Date.now(),
+              custom_id: `${userId}_1`
+            }]
+          }
+        }]
+      };
 
-    // if (response.statusCode !== 201) {
-    //   throw new Error(`PayPal capture error: ${response.statusCode}`);
-    // }
+      // Continue with mock processing...
+      if (captureData.status === 'COMPLETED') {
+        // Extract plan info from custom_id
+        const customId = captureData.purchase_units[0].payments.captures[0].custom_id || captureData.purchase_units[0].custom_id;
+        const [captureUserId, planId] = customId.split('_');
 
-    // Mock capture response for testing
-    const captureData = {
-      status: 'COMPLETED',
-      purchase_units: [{
-        custom_id: `${userId}_1`,
-        payments: {
-          captures: [{
-            id: "MOCK_CAPTURE_" + Date.now(),
-            custom_id: `${userId}_1`
-          }]
+        // Get plan details
+        const { data: plan } = await supabase
+          .from('subscription_plans')
+          .select('*')
+          .eq('id', planId)
+          .single();
+
+        if (plan) {
+          // Calculate subscription dates
+          const startDate = new Date();
+          const endDate = new Date();
+          endDate.setDate(startDate.getDate() + plan.duration_days);
+
+          // Create or update subscription
+          const { error: subError } = await supabase
+            .from('user_subscriptions')
+            .upsert({
+              user_id: userId,
+              plan_id: planId,
+              paypal_order_id: orderId,
+              status: 'active',
+              start_date: startDate.toISOString(),
+              end_date: endDate.toISOString(),
+              auto_renew: true
+            });
+
+          if (subError) {
+            console.error("Error creating subscription:", subError);
+          }
         }
-      }]
-    };
+
+        // Update transaction record
+        const { error: updateError } = await supabase
+          .from('payment_transactions')
+          .update({
+            status: 'completed',
+            paypal_payment_id: captureData.purchase_units[0].payments.captures[0].id,
+            transaction_data: captureData
+          })
+          .eq('paypal_order_id', orderId);
+
+        if (updateError) {
+          console.error("Error updating transaction:", updateError);
+        }
+
+        return res.json({
+          success: true,
+          transactionId: captureData.purchase_units[0].payments.captures[0].id,
+          subscriptionActive: true,
+          note: "Mock PayPal capture - configure real credentials in .env"
+        });
+      } else {
+        return res.status(400).json({ error: "Mock pago no completado" });
+      }
+    }
+
+    // Capture the order
+    const ordersController = new OrdersController(paypalClient);
+    const response = await ordersController.captureOrder({
+      id: orderId,
+      prefer: 'return=representation'
+    });
+
+    if (response.statusCode !== 201) {
+      throw new Error(`PayPal capture error: ${response.statusCode}`);
+    }
+
+    const captureData = response.result;
 
     if (captureData.status === 'COMPLETED') {
       // Extract plan info from custom_id
