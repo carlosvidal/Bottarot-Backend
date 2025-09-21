@@ -140,38 +140,99 @@ app.post("/chat", async (req, res) => {
   }
 });
 
+app.post("/api/tarot/check", async (req, res) => {
+  const { history, current_question } = req.body;
+
+  if (!current_question) {
+    return res.status(400).json({ error: "Falta el mensaje actual (current_question)." });
+  }
+
+  // Limitar el historial a las últimas 3 interacciones para eficiencia
+  const recentHistory = history ? history.slice(-6) : []; // 3 pares de user/assistant
+
+  const historyText = recentHistory.map(msg => `${msg.role}: ${msg.content}`).join('\n');
+
+  const CLASSIFICATION_PROMPT = `Eres un asistente que decide si un mensaje de tarot necesita nuevas cartas.
+
+Historial de la conversación (últimas 3 interacciones):
+${historyText}
+
+Mensaje actual: "${current_question}"
+
+Responde SOLO con "follow_up" si el mensaje es para profundizar, aclarar o preguntar sobre la interpretación actual.
+Responde SOLO con "new_draw" si el mensaje pide una lectura completamente nueva, cambia de tema, o es una pregunta que no tiene relación directa con la interpretación anterior.`;
+
+  try {
+    console.log(`🧐 Clasificando pregunta: "${current_question.substring(0, 50)}"...`);
+
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        {
+          role: "system",
+          content: "Eres un asistente de clasificación que solo puede responder con 'follow_up' o 'new_draw'."
+        },
+        { role: "user", content: CLASSIFICATION_PROMPT },
+      ],
+      temperature: 0,
+      max_tokens: 5,
+    });
+
+    let decision = completion.choices[0]?.message?.content?.trim().toLowerCase();
+
+    // Fallback y validación
+    if (decision !== 'follow_up' && decision !== 'new_draw') {
+      console.warn(`⚠️ Decisión no estándar del modelo: '${decision}'. Se usará 'new_draw' como fallback.`);
+      decision = 'new_draw';
+    }
+    
+    console.log(`✅ Decisión: ${decision}`);
+    res.json({ decision });
+
+  } catch (err) {
+    console.error("❌ Error al clasificar la pregunta:", err);
+    res.status(500).json({ error: "No se pudo clasificar la pregunta." });
+  }
+});
+
 app.post("/api/tarot", async (req, res) => {
-  const { pregunta, cartas, contextoPersonal } = req.body;
+  const { pregunta, cartas, contextoPersonal, history } = req.body;
 
   if (!pregunta || !cartas || !Array.isArray(cartas) || cartas.length === 0) {
     return res.status(400).json({ error: "Faltan la pregunta o las cartas." });
   }
 
-  // Construir el prompt para el LLM con contexto personal
-  const userPrompt = `
-${contextoPersonal ? `${contextoPersonal}\n` : ''}
-Pregunta del usuario: "${pregunta}"
+  // Construir el historial para el prompt
+  const historyText = history && history.length > 0
+    ? `---\n**Historial de la Conversación Anterior:**\n${history.map(msg => `${msg.role === 'user' ? 'Consultante' : 'Oráculo'}: ${msg.content}`).join('\n\n')}\n---`
+    : '';
 
-Cartas seleccionadas:
+  // Construir el prompt para el LLM
+  const userPrompt = `
+${historyText}
+
+${contextoPersonal ? `${contextoPersonal}\n` : ''}
+**Pregunta Actual del Consultante:** "${pregunta}"
+
+**Cartas para esta pregunta:**
 ${cartas
   .map(
     (carta, index) =>
-      `${index + 1}. ${carta.nombre} - ${carta.orientacion} (Posición: ${
+      `${index + 1}. ${carta.nombre} - ${carta.orientacion} (Posición: ${`
         carta.posicion
-      })`
+      })`}
   )
   .join("\n")}
 
 ---
-Por favor, genera una interpretación de tarot siguiendo las reglas y el estilo definidos${contextoPersonal ? '. IMPORTANTE: Utiliza la información personal proporcionada para hacer una interpretación más relevante, personalizada y específica. Saluda al consultante por su nombre con el saludo apropiado para la hora, considera su edad y circunstancias, y menciona cualquier fecha especial relevante' : ''}.
+Por favor, genera una interpretación de tarot. ${historyText ? 'Usa el historial de la conversación para dar una respuesta contextual y que continúe el diálogo de forma natural.' : 'Sigue las reglas y el estilo definidos.'}${contextoPersonal ? ' Además, IMPORTANTE: Utiliza la información personal proporcionada para hacer una interpretación más relevante y personalizada.' : ''}
 `;
 
   try {
-    // Log para debugging (sin información sensible)
-    console.log(`🔮 Generando interpretación de tarot para pregunta: "${pregunta.substring(0, 50)}..."`);
-    if (contextoPersonal) {
-      console.log('📋 Interpretación con contexto personalizado incluido');
-    }
+    // Log para debugging
+    console.log(`🔮 Generando interpretación para: "${pregunta.substring(0, 50)}"...`);
+    if (history && history.length > 0) console.log('🧠 Interpretación con historial de conversación.');
+    if (contextoPersonal) console.log('📋 Interpretación con contexto personalizado.');
 
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
@@ -194,6 +255,7 @@ Por favor, genera una interpretación de tarot siguiendo las reglas y el estilo 
   }
 });
 
+
 // ========================================
 // PAYPAL PAYMENT ENDPOINTS
 // ========================================
@@ -201,6 +263,18 @@ Por favor, genera una interpretación de tarot siguiendo las reglas y el estilo 
 // Test endpoint
 app.get("/api/test", (req, res) => {
   res.json({ message: "Test endpoint working!" });
+});
+
+// Warmup ping endpoint for Render.com free tier
+app.get("/ping", (req, res) => {
+  const serverTime = Date.now();
+  console.log('🔥 Warmup ping received at:', new Date().toISOString());
+  res.json({
+    ok: true,
+    time: serverTime,
+    message: "El oráculo está despierto",
+    timestamp: new Date().toISOString()
+  });
 });
 
 // Get subscription plans
