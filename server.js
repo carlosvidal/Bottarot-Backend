@@ -218,7 +218,7 @@ ${contextoPersonal ? `${contextoPersonal}\n` : ''}
 ${cartas
   .map(
     (carta, index) =>
-      `${index + 1}. ${carta.nombre} - ${carta.orientacion} (Posición: ${carta.posicion})`}
+      `${index + 1}. ${carta.nombre} - ${carta.orientacion} (Posición: ${carta.posicion})`
   )
   .join("\n")}
 
