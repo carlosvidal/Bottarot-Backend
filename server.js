@@ -266,7 +266,7 @@ app.get("/api/test", (req, res) => {
 });
 
 // Warmup ping endpoint for Render.com free tier
-app.get("/", (req, res) => {
+app.get("/ping", (req, res) => {
   const serverTime = Date.now();
   console.log('🔥 Warmup ping received at:', new Date().toISOString());
   res.json({
