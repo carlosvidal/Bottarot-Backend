@@ -674,6 +674,92 @@ app.post("/api/user/question", async (req, res) => {
   }
 });
 
+// ========================================
+// CHAT PERSISTENCE ENDPOINTS
+// ========================================
+
+app.get("/api/chats/:chatId", async (req, res) => {
+  const { chatId } = req.params;
+  // TODO: Add user authentication check to ensure user can access this chat
+
+  try {
+    console.log(`📚 Cargando historial para el chat: ${chatId}`);
+    const { data, error } = await supabase
+      .from('messages')
+      .select('*')
+      .eq('chat_id', chatId)
+      .order('created_at', { ascending: true });
+
+    if (error) throw error;
+
+    console.log(`✅ Historial cargado: ${data.length} mensajes encontrados.`);
+    res.json(data);
+  } catch (err) {
+    console.error(`❌ Error fetching chat history for ${chatId}:`, err);
+    res.status(500).json({ error: "No se pudo cargar el historial del chat." });
+  }
+});
+
+app.post("/api/chats", async (req, res) => {
+  const { chatId, userId, title } = req.body;
+
+  if (!chatId || !userId) {
+    return res.status(400).json({ error: "Faltan chatId o userId." });
+  }
+
+  try {
+    console.log(`⏳ Creando nuevo chat en DB: ${chatId}`);
+    const { data, error } = await supabase
+      .from('chats')
+      .insert([{ id: chatId, user_id: userId, title: title }])
+      .select();
+
+    if (error) {
+        // If the chat already exists (duplicate key), don't treat it as a fatal error.
+        if (error.code === '23505') { // 23505 is the PostgreSQL error code for unique_violation
+            console.log(`👍 El chat ${chatId} ya existía, continuando.`);
+            return res.status(200).json({ message: 'Chat already exists' });
+        }
+        throw error;
+    }
+
+    console.log(`✅ Chat creado exitosamente: ${data[0].id}`);
+    res.status(201).json(data[0]);
+  } catch (err) {
+    console.error(`❌ Error creating chat ${chatId}:`, err);
+    res.status(500).json({ error: "No se pudo crear el chat." });
+  }
+});
+
+app.post("/api/messages", async (req, res) => {
+  const { chatId, userId, role, content, cards } = req.body;
+
+  if (!chatId || !role || !content) {
+    return res.status(400).json({ error: "Faltan chatId, role o content." });
+  }
+
+  try {
+    const { data, error } = await supabase
+      .from('messages')
+      .insert([{ 
+        chat_id: chatId, 
+        user_id: userId, 
+        role, 
+        content, 
+        cards 
+      }])
+      .select();
+
+    if (error) throw error;
+
+    console.log(`💾 Mensaje guardado para el chat ${chatId} (Rol: ${role})`);
+    res.status(201).json(data[0]);
+  } catch (err) {
+    console.error(`❌ Error saving message for chat ${chatId}:`, err);
+    res.status(500).json({ error: "No se pudo guardar el mensaje." });
+  }
+});
+
 app.listen(3000, () => {
   console.log("🚀 LLM proxy escuchando en http://localhost:3000");
 });
