@@ -141,15 +141,17 @@ app.post("/chat", async (req, res) => {
 });
 
 app.post("/api/tarot", async (req, res) => {
-  const { pregunta, cartas } = req.body;
+  const { pregunta, cartas, contextoPersonal } = req.body;
 
   if (!pregunta || !cartas || !Array.isArray(cartas) || cartas.length === 0) {
     return res.status(400).json({ error: "Faltan la pregunta o las cartas." });
   }
 
-  // Construir el prompt para el LLM
+  // Construir el prompt para el LLM con contexto personal
   const userPrompt = `
+${contextoPersonal ? `${contextoPersonal}\n` : ''}
 Pregunta del usuario: "${pregunta}"
+
 Cartas seleccionadas:
 ${cartas
   .map(
@@ -159,11 +161,18 @@ ${cartas
       })`
   )
   .join("\n")}
+
 ---
-Por favor, genera una interpretación de tarot siguiendo las reglas y el estilo definidos.
+Por favor, genera una interpretación de tarot siguiendo las reglas y el estilo definidos${contextoPersonal ? '. IMPORTANTE: Utiliza la información personal proporcionada para hacer una interpretación más relevante, personalizada y específica. Saluda al consultante por su nombre con el saludo apropiado para la hora, considera su edad y circunstancias, y menciona cualquier fecha especial relevante' : ''}.
 `;
 
   try {
+    // Log para debugging (sin información sensible)
+    console.log(`🔮 Generando interpretación de tarot para pregunta: "${pregunta.substring(0, 50)}..."`);
+    if (contextoPersonal) {
+      console.log('📋 Interpretación con contexto personalizado incluido');
+    }
+
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [
@@ -176,9 +185,11 @@ Por favor, genera una interpretación de tarot siguiendo las reglas y el estilo 
     });
 
     const interpretation = completion.choices[0]?.message?.content;
+
+    console.log('✅ Interpretación generada exitosamente');
     res.json({ interpretation });
   } catch (err) {
-    console.error("Error al contactar con OpenAI:", err);
+    console.error("❌ Error al contactar con OpenAI:", err);
     res.status(500).json({ error: "No se pudo obtener la interpretación." });
   }
 });
