@@ -607,6 +607,17 @@ app.post("/api/payments/capture-order", async (req, res) => {
 
 // Get user subscription status
 app.get("/api/user/subscription/:userId", async (req, res) => {
+  // MOCKED RESPONSE FOR DEBUGGING
+  console.log(`[DEBUG] Mocking subscription data for user: ${req.params.userId}`);
+  res.json({
+    has_active_subscription: true,
+    plan_name: 'Plan Depuración',
+    questions_remaining: 99,
+    subscription_end_date: new Date(Date.now() + 1000 * 60 * 60 * 24 * 7).toISOString(), // 7 days from now
+    can_ask_question: true
+  });
+
+  /* --- ORIGINAL CODE ---
   try {
     const { userId } = req.params;
 
@@ -627,6 +638,7 @@ app.get("/api/user/subscription/:userId", async (req, res) => {
     console.error("Error getting subscription info:", err);
     res.status(500).json({ error: "No se pudo obtener la información de suscripción." });
   }
+  */
 });
 
 // Check if user can ask question
