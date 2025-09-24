@@ -758,42 +758,6 @@ app.post("/api/messages", async (req, res) => {
   }
 });
 
-// New endpoint for AI response generation
-app.post("/api/chat/generate-ai-response", async (req, res) => {
-  const { chatId, userId, question } = req.body;
-
-  if (!question) {
-    return res.status(400).json({ error: "La pregunta es requerida." });
-  }
-
-  try {
-    console.log(`🔮 Generando respuesta de IA para chat ${chatId}, usuario ${userId} con pregunta: "${question.substring(0, 50)}"...`);
-
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [
-        {
-          role: "system",
-          content: TAROT_SYSTEM_PROMPT,
-        },
-        { role: "user", content: question },
-      ],
-    });
-
-    const aiResponseContent = completion.choices[0]?.message?.content;
-
-    if (!aiResponseContent) {
-      throw new Error("No se pudo obtener una respuesta de la IA.");
-    }
-
-    console.log(`✅ Respuesta de IA generada exitosamente para chat ${chatId}.`);
-    res.json({ content: aiResponseContent });
-
-  } catch (err) {
-    console.error("❌ Error al generar respuesta de IA:", err);
-    res.status(500).json({ error: "No se pudo generar la respuesta de la IA." });
-  }
-});
 
 app.listen(3000, () => {
   console.log("🚀 LLM proxy escuchando en http://localhost:3000");
