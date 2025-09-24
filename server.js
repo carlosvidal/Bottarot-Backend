@@ -611,7 +611,7 @@ app.get("/api/user/subscription/:userId", async (req, res) => {
     const { userId } = req.params;
 
     const { data, error } = await supabase
-      .rpc('get_user_subscription_info', { user_uuid: userId });
+      .rpc('get_user_subscription_info', { p_user_uuid: userId });
 
     if (error) throw error;
 
