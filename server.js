@@ -341,7 +341,20 @@ app.post("/api/payments/capture-order", async (req, res) => {
 
 // Get user subscription status
 app.get("/api/user/subscription/:userId", async (req, res) => {
-    // ... (logic remains the same)
+  try {
+    console.log(`[DEBUG] Hit dummy subscription endpoint for user: ${req.params.userId}`);
+    // Return a hardcoded dummy response, completely bypassing Supabase.
+    res.json({
+      has_active_subscription: true,
+      plan_name: 'Premium Plan (Debug)',
+      questions_remaining: 100,
+      subscription_end_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
+      can_ask_question: true
+    });
+  } catch (err) {
+    console.error("Error getting subscription info:", err);
+    res.status(500).json({ error: "No se pudo obtener la información de suscripción." });
+  }
 });
 
 // ... other endpoints ...
