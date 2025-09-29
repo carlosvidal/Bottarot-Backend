@@ -240,7 +240,12 @@ app.post("/api/chat/message", async (req, res) => {
 
 // =======================================
 // PAYPAL & OTHER ENDPOINTS (UNCHANGED)
-// =======================================
+// ========================================
+
+// Version check endpoint for debugging deployments
+app.get("/api/version", (req, res) => {
+  res.json({ version: "2.0-dummy-fix" });
+});
 
 // Warmup ping endpoint for Render.com free tier
 app.get("/ping", (req, res) => {
