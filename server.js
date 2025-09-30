@@ -191,6 +191,37 @@ app.post("/api/chat/message", async (req, res) => {
 
         // CASE 3: La pregunta requiere una nueva tirada
         if (decision.type === 'requires_new_draw') {
+            let generatedTitle = null;
+
+            // If it's the first message of a new chat, generate a title
+            if (!history || history.length === 0) {
+                console.log(`[${chatId}] ✍️ Generating title for new chat...`);
+                try {
+                    const titleCompletion = await openai.chat.completions.create({
+                        model: "gpt-4o-mini",
+                        messages: [
+                            { role: "system", content: "Eres un experto en SEO. Resume la siguiente pregunta en un título corto y atractivo de 3 a 5 palabras para un historial de chat. Responde únicamente con el título." },
+                            { role: "user", content: question },
+                        ],
+                        temperature: 0.7,
+                        max_tokens: 20,
+                    });
+                    generatedTitle = titleCompletion.choices[0]?.message?.content.replace(/"/g, '') || question.substring(0, 40);
+
+                    // Save the new title to the database
+                    console.log(`[${chatId}] 💾 Saving new title: "${generatedTitle}"`);
+                    await supabase.rpc('update_chat_title', { 
+                        p_chat_id: chatId, 
+                        p_user_id: userId, 
+                        p_new_title: generatedTitle 
+                    });
+
+                } catch (titleError) {
+                    console.error(`[${chatId}] ❌ Error generating chat title:`, titleError);
+                    // Continue without a title if generation fails
+                }
+            }
+
             console.log(`[${chatId}] 🃏 Realizando nueva tirada de cartas.`);
             const drawnCards = drawCards(3);
 
@@ -224,7 +255,8 @@ app.post("/api/chat/message", async (req, res) => {
                 type: 'tarot_reading',
                 cards: drawnCards,
                 interpretation: interpretation,
-                role: 'assistant'
+                role: 'assistant',
+                title: generatedTitle // Include title in the response
             });
         }
 
