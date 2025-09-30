@@ -4,11 +4,8 @@ import fetch from "node-fetch";
 import { OpenAI } from "openai";
 import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
-import paypalClient from "./paypal-config.js";
-import pkg from '@paypal/paypal-server-sdk';
 import { tarotDeck } from "./data/tarotDeck.js";
 
-const { OrdersController } = pkg;
 dotenv.config();
 
 const supabaseUrl = process.env.SUPABASE_URL;
@@ -197,11 +194,12 @@ app.post("/api/chat/message", async (req, res) => {
 
                     // Save the new title to the database
                     console.log(`[${chatId}] 💾 Saving new title: "${generatedTitle}"`);
-                    await supabase.rpc('update_chat_title', { 
-                        p_chat_id: chatId, 
-                        p_user_id: userId, 
-                        p_new_title: generatedTitle 
-                    });
+                    // The user would need to re-create this RPC function if they want this feature
+                    // await supabase.rpc('update_chat_title', { 
+                    //     p_chat_id: chatId, 
+                    //     p_user_id: userId, 
+                    //     p_new_title: generatedTitle 
+                    // });
 
                 } catch (titleError) {
                     console.error(`[${chatId}] ❌ Error generating chat title:`, titleError);
