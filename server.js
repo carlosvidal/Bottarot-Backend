@@ -53,7 +53,7 @@ Debes responder **únicamente** con un objeto JSON. No añadas explicaciones ni 
 {"type": "is_inadequate", "response": "Aquí va la respuesta pre-generada para el usuario."}
 
 ### Ejemplos de Respuestas is_inadequate:
-*   Si preguntan por soporte: {"type": "is_inadequate", "response": "Soy un oráculo de tarot y no puedo ayudarte con asuntos técnicos o de suscripción. Por favor, contacta a soporte para obtener ayuda."}
+*   Si preguntan por soporte: {"type": "is_inadequate", "response": "Soy un oráculo de tarot y no puedo ayudarte con asuntos técnicos o de suscripción. Por favor, contacta a soporte para obtener ayuda."} 
 *   Si la pregunta es vaga: {"type": "is_inadequate", "response": "Para que las cartas te ofrezcan una guía clara, necesito que me des un poco más de contexto. ¿Sobre qué área de tu vida te gustaría preguntar?"}
 *   Si es un saludo o broma: {"type": "is_inadequate", "response": "El oráculo está listo. Formula tu pregunta cuando quieras."}
 `;
@@ -216,7 +216,10 @@ app.post("/api/chat/message", async (req, res) => {
             const interpreterPrompt = `
             ${personalContext || ''}
 
-            ${historyForInterpreter ? `---\n**Historial de la Conversación Anterior:**\n${historyForInterpreter}\n---` : ''}
+            ${historyForInterpreter ? `---
+**Historial de la Conversación Anterior:**
+${historyForInterpreter}
+---` : ''}
 
             **Pregunta Actual del Consultante:** "${question}"
 
