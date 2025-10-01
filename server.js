@@ -279,6 +279,58 @@ app.get("/ping", (req, res) => {
   });
 });
 
+// Text-to-Speech endpoint using ElevenLabs
+app.post("/api/tts", async (req, res) => {
+  try {
+    const { text } = req.body;
+
+    if (!text) {
+      return res.status(400).json({ error: "Text is required" });
+    }
+
+    const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
+    const VOICE_ID = process.env.ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM"; // Rachel voice by default
+
+    if (!ELEVENLABS_API_KEY) {
+      console.error("❌ ELEVENLABS_API_KEY not configured");
+      return res.status(500).json({ error: "TTS service not configured" });
+    }
+
+    console.log(`🎙️ Generating TTS for ${text.length} characters...`);
+
+    const response = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${VOICE_ID}`, {
+      method: 'POST',
+      headers: {
+        'Accept': 'audio/mpeg',
+        'Content-Type': 'application/json',
+        'xi-api-key': ELEVENLABS_API_KEY
+      },
+      body: JSON.stringify({
+        text: text,
+        model_id: "eleven_multilingual_v2",
+        voice_settings: {
+          stability: 0.5,
+          similarity_boost: 0.75
+        }
+      })
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('❌ ElevenLabs API error:', errorText);
+      return res.status(response.status).json({ error: "TTS generation failed" });
+    }
+
+    // Stream the audio back to the client
+    res.setHeader('Content-Type', 'audio/mpeg');
+    response.body.pipe(res);
+
+  } catch (error) {
+    console.error("❌ Error in TTS endpoint:", error);
+    res.status(500).json({ error: "Failed to generate speech" });
+  }
+});
+
 // Get subscription plans
 app.get("/api/subscription-plans", async (req, res) => {
   try {
