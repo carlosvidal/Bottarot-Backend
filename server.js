@@ -222,7 +222,7 @@ ${historyForInterpreter}
             **Pregunta Actual del Consultante:** "${question}"
 
             **Cartas para esta pregunta:**
-            ${drawnCards.map((carta, index) => `${index + 1}. ${carta.nombre} - ${carta.orientation} (Posición: ${carta.posicion})`).join("\n")}
+            ${drawnCards.map((carta, index) => `${index + 1}. ${carta.name} - ${carta.orientation} (Posición: ${carta.posicion})`).join("\n")}
 
             ---
             Por favor, genera una interpretación de tarot.
