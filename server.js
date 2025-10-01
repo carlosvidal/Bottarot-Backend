@@ -279,6 +279,10 @@ app.get("/ping", (req, res) => {
   });
 });
 
+// Simple in-memory cache for TTS (consider using Redis for production)
+const ttsCache = new Map();
+const MAX_CACHE_SIZE = 50;
+
 // Text-to-Speech endpoint using ElevenLabs
 app.post("/api/tts", async (req, res) => {
   try {
@@ -286,6 +290,16 @@ app.post("/api/tts", async (req, res) => {
 
     if (!text) {
       return res.status(400).json({ error: "Text is required" });
+    }
+
+    // Check cache first
+    const cacheKey = `${text.substring(0, 100)}`;
+    if (ttsCache.has(cacheKey)) {
+      console.log(`✅ TTS cache hit for ${text.length} characters`);
+      const cachedAudio = ttsCache.get(cacheKey);
+      res.setHeader('Content-Type', 'audio/mpeg');
+      res.setHeader('X-Cache', 'HIT');
+      return res.send(cachedAudio);
     }
 
     const ELEVENLABS_API_KEY = process.env.ELEVENLABS_API_KEY;
@@ -321,9 +335,21 @@ app.post("/api/tts", async (req, res) => {
       return res.status(response.status).json({ error: "TTS generation failed" });
     }
 
-    // Stream the audio back to the client
+    // Read the audio data
+    const audioBuffer = await response.arrayBuffer();
+    const audioData = Buffer.from(audioBuffer);
+
+    // Cache the audio (limit cache size)
+    if (ttsCache.size >= MAX_CACHE_SIZE) {
+      const firstKey = ttsCache.keys().next().value;
+      ttsCache.delete(firstKey);
+    }
+    ttsCache.set(cacheKey, audioData);
+
+    // Send the audio back to the client
     res.setHeader('Content-Type', 'audio/mpeg');
-    response.body.pipe(res);
+    res.setHeader('X-Cache', 'MISS');
+    res.send(audioData);
 
   } catch (error) {
     console.error("❌ Error in TTS endpoint:", error);
