@@ -175,6 +175,11 @@ app.post("/api/chat/message", async (req, res) => {
 
         // CASE 3: La pregunta requiere una nueva tirada
         if (decision.type === 'requires_new_draw') {
+            // Configure SSE headers
+            res.setHeader('Content-Type', 'text/event-stream');
+            res.setHeader('Cache-Control', 'no-cache');
+            res.setHeader('Connection', 'keep-alive');
+
             let generatedTitle = null;
 
             // If it's the first message of a new chat, generate a title
@@ -195,11 +200,15 @@ app.post("/api/chat/message", async (req, res) => {
                     // Save the new title to the database
                     console.log(`[${chatId}] 💾 Saving new title: "${generatedTitle}"`);
                     // The user would need to re-create this RPC function if they want this feature
-                    // await supabase.rpc('update_chat_title', { 
-                    //     p_chat_id: chatId, 
-                    //     p_user_id: userId, 
-                    //     p_new_title: generatedTitle 
+                    // await supabase.rpc('update_chat_title', {
+                    //     p_chat_id: chatId,
+                    //     p_user_id: userId,
+                    //     p_new_title: generatedTitle
                     // });
+
+                    // Send title event if generated
+                    res.write(`event: title\n`);
+                    res.write(`data: ${JSON.stringify({ title: generatedTitle })}\n\n`);
 
                 } catch (titleError) {
                     console.error(`[${chatId}] ❌ Error generating chat title:`, titleError);
@@ -209,6 +218,11 @@ app.post("/api/chat/message", async (req, res) => {
 
             console.log(`[${chatId}] 🃏 Realizando nueva tirada de cartas.`);
             const drawnCards = drawCards(3);
+
+            // EVENTO 1: Enviar cartas inmediatamente
+            console.log(`[${chatId}] 📤 Enviando cartas al cliente...`);
+            res.write(`event: cards\n`);
+            res.write(`data: ${JSON.stringify({ cards: drawnCards })}\n\n`);
 
             const historyForInterpreter = history ? history.map(msg => `${msg.role === 'user' ? 'Consultante' : 'Oráculo'}: ${msg.content}`).join('\n\n') : '';
             const interpreterPrompt = `
@@ -239,13 +253,16 @@ ${historyForInterpreter}
             const interpretation = interpreterCompletion.choices[0].message.content;
             console.log(`[${chatId}] ✅ Interpretación generada.`);
 
-            return res.json({
-                type: 'tarot_reading',
-                cards: drawnCards,
-                interpretation: interpretation,
-                role: 'assistant',
-                title: generatedTitle // Include title in the response
-            });
+            // EVENTO 2: Enviar interpretación
+            console.log(`[${chatId}] 📤 Enviando interpretación al cliente...`);
+            res.write(`event: interpretation\n`);
+            res.write(`data: ${JSON.stringify({ text: interpretation })}\n\n`);
+
+            // EVENTO FINAL: Done
+            res.write(`event: done\n`);
+            res.write(`data: ${JSON.stringify({ complete: true })}\n\n`);
+
+            return res.end();
         }
 
         // Fallback por si la decisión no es ninguna de las esperadas
