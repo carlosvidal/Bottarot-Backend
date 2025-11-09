@@ -291,7 +291,12 @@ ${historyForInterpreter}
 
 // Version check endpoint for debugging deployments
 app.get("/api/version", (req, res) => {
-  res.json({ version: "2.0-dummy-fix" });
+  res.json({
+    version: "3.0-sse-streaming",
+    commit: "e659352",
+    features: ["sse-streaming", "improved-decisor", "tts-cache"],
+    timestamp: new Date().toISOString()
+  });
 });
 
 // Warmup ping endpoint for Render.com free tier
