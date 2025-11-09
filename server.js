@@ -189,50 +189,36 @@ app.post("/api/chat/message", async (req, res) => {
             res.setHeader('Content-Type', 'text/event-stream');
             res.setHeader('Cache-Control', 'no-cache');
             res.setHeader('Connection', 'keep-alive');
+            res.flushHeaders(); // Enviar headers inmediatamente
 
-            let generatedTitle = null;
-
-            // If it's the first message of a new chat, generate a title
-            if (!history || history.length === 0) {
-                console.log(`[${chatId}] ✍️ Generating title for new chat...`);
-                try {
-                    const titleCompletion = await openai.chat.completions.create({
-                        model: "gpt-4o-mini",
-                        messages: [
-                            { role: "system", content: "Eres un experto en SEO. Resume la siguiente pregunta en un título corto y atractivo de 3 a 5 palabras para un historial de chat. Responde únicamente con el título." },
-                            { role: "user", content: question },
-                        ],
-                        temperature: 0.7,
-                        max_tokens: 20,
-                    });
-                    generatedTitle = titleCompletion.choices[0]?.message?.content.replace(/"/g, '') || question.substring(0, 40);
-
-                    // Save the new title to the database
-                    console.log(`[${chatId}] 💾 Saving new title: "${generatedTitle}"`);
-                    // The user would need to re-create this RPC function if they want this feature
-                    // await supabase.rpc('update_chat_title', {
-                    //     p_chat_id: chatId,
-                    //     p_user_id: userId,
-                    //     p_new_title: generatedTitle
-                    // });
-
-                    // Send title event if generated
-                    res.write(`event: title\n`);
-                    res.write(`data: ${JSON.stringify({ title: generatedTitle })}\n\n`);
-
-                } catch (titleError) {
-                    console.error(`[${chatId}] ❌ Error generating chat title:`, titleError);
-                    // Continue without a title if generation fails
-                }
-            }
-
+            // PASO 1: Tirar cartas INMEDIATAMENTE (sin esperar nada)
             console.log(`[${chatId}] 🃏 Realizando nueva tirada de cartas.`);
             const drawnCards = drawCards(3);
 
-            // EVENTO 1: Enviar cartas inmediatamente
-            console.log(`[${chatId}] 📤 Enviando cartas al cliente...`);
+            // PASO 2: Enviar cartas al cliente SIN DEMORA
+            console.log(`[${chatId}] 📤 Enviando cartas al cliente INMEDIATAMENTE...`);
             res.write(`event: cards\n`);
             res.write(`data: ${JSON.stringify({ cards: drawnCards })}\n\n`);
+            // Forzar flush del buffer para que el cliente reciba las cartas YA
+            if (res.flush) res.flush();
+
+            // PASO 3: Generar título en paralelo (no bloqueante) si es primer mensaje
+            let titlePromise = null;
+            if (!history || history.length === 0) {
+                console.log(`[${chatId}] ✍️ Generando título en background...`);
+                titlePromise = openai.chat.completions.create({
+                    model: "gpt-4o-mini",
+                    messages: [
+                        { role: "system", content: "Eres un experto en SEO. Resume la siguiente pregunta en un título corto y atractivo de 3 a 5 palabras para un historial de chat. Responde únicamente con el título." },
+                        { role: "user", content: question },
+                    ],
+                    temperature: 0.7,
+                    max_tokens: 20,
+                }).catch(err => {
+                    console.error(`[${chatId}] ❌ Error generating title:`, err);
+                    return null;
+                });
+            }
 
             const historyForInterpreter = history ? history.map(msg => `${msg.role === 'user' ? 'Consultante' : 'Oráculo'}: ${msg.content}`).join('\n\n') : '';
             const interpreterPrompt = `
@@ -252,6 +238,7 @@ ${historyForInterpreter}
             Por favor, genera una interpretación de tarot.
             `;
 
+            // PASO 4: Generar interpretación (la parte que toma tiempo)
             console.log(`[${chatId}] 🔮 Agente Intérprete generando...`);
             const interpreterCompletion = await openai.chat.completions.create({
                 model: "gpt-4o-mini",
@@ -263,12 +250,35 @@ ${historyForInterpreter}
             const interpretation = interpreterCompletion.choices[0].message.content;
             console.log(`[${chatId}] ✅ Interpretación generada.`);
 
-            // EVENTO 2: Enviar interpretación
+            // PASO 5: Enviar interpretación al cliente
             console.log(`[${chatId}] 📤 Enviando interpretación al cliente...`);
             res.write(`event: interpretation\n`);
             res.write(`data: ${JSON.stringify({ text: interpretation })}\n\n`);
 
-            // EVENTO FINAL: Done
+            // PASO 6: Enviar título si está disponible (fue generado en paralelo)
+            if (titlePromise) {
+                try {
+                    const titleCompletion = await titlePromise;
+                    if (titleCompletion) {
+                        const generatedTitle = titleCompletion.choices[0]?.message?.content.replace(/"/g, '') || question.substring(0, 40);
+                        console.log(`[${chatId}] 📝 Título generado: "${generatedTitle}"`);
+
+                        res.write(`event: title\n`);
+                        res.write(`data: ${JSON.stringify({ title: generatedTitle })}\n\n`);
+
+                        // Opcional: Guardar en Supabase
+                        // await supabase.rpc('update_chat_title', {
+                        //     p_chat_id: chatId,
+                        //     p_user_id: userId,
+                        //     p_new_title: generatedTitle
+                        // });
+                    }
+                } catch (titleError) {
+                    console.error(`[${chatId}] ❌ Error esperando título:`, titleError);
+                }
+            }
+
+            // PASO 7: Evento DONE para cerrar el stream
             res.write(`event: done\n`);
             res.write(`data: ${JSON.stringify({ complete: true })}\n\n`);
 
