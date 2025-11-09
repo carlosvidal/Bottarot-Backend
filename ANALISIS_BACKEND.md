@@ -116,25 +116,178 @@ Genera interpretaciones místicas y personalizadas.
 }
 ```
 
-*Tipo 2: Lectura de tarot*
-```json
-{
-  "type": "tarot_reading",
-  "cards": [
-    {
-      "name": "string",
-      "description": "string",
-      "image": "string",
-      "upright": true,
-      "orientation": "Derecha|Invertida",
-      "posicion": "Pasado|Presente|Futuro"
+*Tipo 2: Lectura de tarot (Server-Sent Events - SSE)*
+
+**⚡ NUEVO: Streaming con SSE**
+
+Las lecturas de tarot ahora se envían mediante Server-Sent Events (SSE) para mejorar la experiencia del usuario. Las cartas se envían inmediatamente y la interpretación llega después.
+
+**Headers de respuesta:**
+```
+Content-Type: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+```
+
+**Secuencia de eventos:**
+
+1. **Evento: `title`** (solo si es el primer mensaje del chat)
+```
+event: title
+data: {"title": "Amor y Relaciones"}
+```
+
+2. **Evento: `cards`** (se envía inmediatamente después de la tirada)
+```
+event: cards
+data: {"cards": [
+  {
+    "name": "El Loco",
+    "description": "Nuevos comienzos...",
+    "image": "/img/Trumps-00.webp",
+    "upright": true,
+    "orientation": "Derecha",
+    "posicion": "Pasado"
+  },
+  {...},
+  {...}
+]}
+```
+
+3. **Evento: `interpretation`** (se envía después de generar con IA)
+```
+event: interpretation
+data: {"text": "Buenas tardes, Carlos. Las cartas revelan..."}
+```
+
+4. **Evento: `done`** (indica fin de la transmisión)
+```
+event: done
+data: {"complete": true}
+```
+
+**Ejemplo de manejo en el cliente (JavaScript con fetch):**
+
+⚠️ **Nota:** `EventSource` solo soporta GET. Para POST, usar `fetch()` con lectura de stream.
+
+```javascript
+// Función para procesar lecturas de tarot con SSE
+async function requestTarotReading(question, userId, chatId, history = []) {
+  const response = await fetch('/api/chat/message', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question, userId, chatId, history })
+  });
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n\n');
+    buffer = lines.pop(); // Guardar línea incompleta
+
+    for (const line of lines) {
+      if (!line.trim()) continue;
+
+      const [eventLine, dataLine] = line.split('\n');
+      const eventType = eventLine.replace('event: ', '');
+      const data = JSON.parse(dataLine.replace('data: ', ''));
+
+      switch (eventType) {
+        case 'title':
+          console.log('📝 Título:', data.title);
+          // Actualizar UI con título
+          break;
+
+        case 'cards':
+          console.log('🃏 Cartas recibidas:', data.cards);
+          // Mostrar cartas con animación inmediatamente
+          displayCards(data.cards);
+          break;
+
+        case 'interpretation':
+          console.log('🔮 Interpretación:', data.text);
+          // Mostrar interpretación
+          displayInterpretation(data.text);
+          break;
+
+        case 'done':
+          console.log('✅ Lectura completa');
+          break;
+      }
     }
-  ],
-  "interpretation": "string",
-  "role": "assistant",
-  "title": "string (solo en primer mensaje)"
+  }
 }
 ```
+
+**Ejemplo con Vue.js 3 (Composition API):**
+```javascript
+import { ref } from 'vue';
+
+const cards = ref([]);
+const interpretation = ref('');
+const chatTitle = ref('');
+const isLoading = ref(false);
+
+async function askTarot(question) {
+  isLoading.value = true;
+  cards.value = [];
+  interpretation.value = '';
+
+  try {
+    const response = await fetch('/api/chat/message', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        question,
+        userId: user.value.id,
+        chatId: currentChat.value.id,
+        history: chatHistory.value
+      })
+    });
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split('\n\n');
+      buffer = events.pop();
+
+      for (const event of events) {
+        if (!event.trim()) continue;
+
+        const lines = event.split('\n');
+        const eventType = lines[0].replace('event: ', '');
+        const data = JSON.parse(lines[1].replace('data: ', ''));
+
+        if (eventType === 'title') chatTitle.value = data.title;
+        if (eventType === 'cards') cards.value = data.cards;
+        if (eventType === 'interpretation') interpretation.value = data.text;
+        if (eventType === 'done') isLoading.value = false;
+      }
+    }
+  } catch (error) {
+    console.error('Error en lectura:', error);
+    isLoading.value = false;
+  }
+}
+```
+
+**Ventajas del streaming:**
+- ⚡ Las cartas aparecen instantáneamente (0.1-0.2s vs 3-5s)
+- 🎨 Permite animaciones mientras se genera la interpretación
+- 📊 Mejor percepción de velocidad por parte del usuario
+- 🔄 Respuesta progresiva en lugar de espera bloqueante
 
 ---
 
