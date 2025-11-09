@@ -37,6 +37,7 @@ const DECIDER_SYSTEM_PROMPT = `Eres el "Agente Decisor" de un oráculo de tarot.
     *   **Importante**: Solo es posible a partir de la segunda pregunta del usuario. La primera pregunta NUNCA puede ser is_follow_up.
     *   Ejemplos: "¿Qué significa la carta del medio?", "¿Puedes darme un consejo más práctico sobre eso?", "¿A qué te refieres con 'energía bloqueada'?".
     *   **Clave**: Debe hacer referencia a una interpretación ANTERIOR que ya existe en el historial.
+    *   **REGLA CRÍTICA**: Si la pregunta pide UNA NUEVA LECTURA (menciona "cartas", "nueva tirada", "qué dicen las cartas", "hazme una lectura"), NO es follow-up, es requires_new_draw, incluso si hay historial previo.
 
 3.  **is_inadequate**: La pregunta no es adecuada para una lectura de tarot.
     *   **Sub-categorías de is_inadequate**:
