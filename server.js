@@ -302,9 +302,19 @@ ${historyForInterpreter}
 // Version check endpoint for debugging deployments
 app.get("/api/version", (req, res) => {
   res.json({
-    version: "3.0-sse-streaming",
-    commit: "e659352",
-    features: ["sse-streaming", "improved-decisor", "tts-cache"],
+    version: "3.1-instant-cards",
+    commit: "785bb30",
+    features: [
+      "sse-streaming",
+      "instant-cards-delivery",
+      "parallel-title-generation",
+      "improved-decisor",
+      "tts-cache"
+    ],
+    performance: {
+      cardsDelivery: "~50-100ms",
+      interpretationDelivery: "~3-4s"
+    },
     timestamp: new Date().toISOString()
   });
 });
