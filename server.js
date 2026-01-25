@@ -492,14 +492,25 @@ app.post("/api/payments/capture-order", async (req, res) => {
 // Get user subscription status
 app.get("/api/user/subscription/:userId", async (req, res) => {
   try {
-    console.log(`[DEBUG] Hit dummy subscription endpoint for user: ${req.params.userId}`);
-    // Return a hardcoded dummy response, completely bypassing Supabase.
-    res.json({
-      has_active_subscription: true,
-      plan_name: 'Premium Plan (Debug)',
-      questions_remaining: 100,
-      subscription_end_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-      can_ask_question: true
+    const { userId } = req.params;
+    console.log(`[Subscription] Fetching subscription info for user: ${userId}`);
+
+    const { data, error } = await supabase.rpc('get_user_subscription_info', {
+      p_user_id: userId
+    });
+
+    if (error) {
+      console.error(`[Subscription] Supabase RPC error:`, error);
+      throw error;
+    }
+
+    console.log(`[Subscription] Response:`, data);
+    res.json(data || {
+      has_active_subscription: false,
+      plan_name: null,
+      questions_remaining: 0,
+      subscription_end_date: null,
+      can_ask_question: false
     });
   } catch (err) {
     console.error("Error getting subscription info:", err);
