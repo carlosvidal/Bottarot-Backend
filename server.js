@@ -1,12 +1,15 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 import express from "express";
 import cors from "cors";
 import fetch from "node-fetch";
 import { OpenAI } from "openai";
-import dotenv from "dotenv";
 import { createClient } from "@supabase/supabase-js";
 import { tarotDeck } from "./data/tarotDeck.js";
-
-dotenv.config();
+import paypalClient from "./paypal-config.js";
+import pkg from "@paypal/paypal-server-sdk";
+const { OrdersController } = pkg;
 
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY;
@@ -115,6 +118,35 @@ app.post("/api/chat/message", async (req, res) => {
         return res.status(400).json({ error: "La pregunta (question) es requerida." });
     }
 
+    // Determine if user is anonymous
+    const isAnonymous = !userId || userId === 'anonymous';
+    let userPermissions = null;
+    let futureHidden = isAnonymous; // Anonymous users always have future hidden
+    let ctaMessage = null;
+
+    // Get user permissions if authenticated
+    if (!isAnonymous) {
+        try {
+            const { data: permissions, error } = await supabase.rpc(
+                'get_user_reading_permissions',
+                { p_user_id: userId }
+            );
+            if (!error && permissions) {
+                userPermissions = permissions;
+                futureHidden = !permissions.can_see_future && !permissions.is_premium;
+            }
+        } catch (permErr) {
+            console.error(`[${chatId}] ⚠️ Error getting permissions:`, permErr);
+        }
+    }
+
+    // Set appropriate CTA message
+    if (isAnonymous) {
+        ctaMessage = "Para revelar tu futuro, reclama tu identidad espiritual";
+    } else if (futureHidden) {
+        ctaMessage = "Desbloquea tu futuro completo con un plan premium";
+    }
+
     try {
         // --- 1. AGENT DECISOR ---
         console.log(`[${chatId}] 🧐 Agente Decisor analizando: "${question.substring(0, 50)}"...`);
@@ -195,10 +227,15 @@ app.post("/api/chat/message", async (req, res) => {
             console.log(`[${chatId}] 🃏 Realizando nueva tirada de cartas.`);
             const drawnCards = drawCards(3);
 
-            // PASO 2: Enviar cartas al cliente SIN DEMORA
-            console.log(`[${chatId}] 📤 Enviando cartas al cliente INMEDIATAMENTE...`);
+            // PASO 2: Enviar cartas al cliente SIN DEMORA (con info de futuro oculto)
+            console.log(`[${chatId}] 📤 Enviando cartas al cliente INMEDIATAMENTE... (futureHidden: ${futureHidden})`);
             res.write(`event: cards\n`);
-            res.write(`data: ${JSON.stringify({ cards: drawnCards })}\n\n`);
+            res.write(`data: ${JSON.stringify({
+                cards: drawnCards,
+                futureHidden: futureHidden,
+                ctaMessage: ctaMessage,
+                isAnonymous: isAnonymous
+            })}\n\n`);
             // Forzar flush del buffer para que el cliente reciba las cartas YA
             if (res.flush) res.flush();
 
@@ -416,7 +453,7 @@ app.get("/api/subscription-plans", async (req, res) => {
       .from('subscription_plans')
       .select('*')
       .eq('is_active', true)
-      .order('price', { ascending: true });
+      .order('display_order', { ascending: true });
 
     if (error) throw error;
 
@@ -427,10 +464,150 @@ app.get("/api/subscription-plans", async (req, res) => {
   }
 });
 
+// Get available subscription plans for a user (filters promotional plans by eligibility)
+app.get("/api/subscription-plans/available/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    console.log(`[Plans] Fetching available plans for user: ${userId}`);
+
+    // Get all active plans
+    const { data: plans, error: plansError } = await supabase
+      .from('subscription_plans')
+      .select('*')
+      .eq('is_active', true)
+      .order('display_order', { ascending: true });
+
+    if (plansError) throw plansError;
+
+    // If no userId provided, return all plans except trial (for anonymous users)
+    if (!userId || userId === 'anonymous') {
+      const filteredPlans = plans.filter(p => p.plan_type !== 'trial');
+      return res.json({ plans: filteredPlans });
+    }
+
+    // Check promotional offer eligibility for each plan
+    const plansWithEligibility = await Promise.all(plans.map(async (plan) => {
+      if (plan.is_promotional && plan.plan_type === 'trial') {
+        // Check if user is eligible for this promotional offer
+        const { data: eligibility, error: eligError } = await supabase.rpc(
+          'check_promo_eligibility',
+          { p_user_id: userId, p_offer_type: 'ritual_de_iniciacion' }
+        );
+
+        if (eligError) {
+          console.error(`[Plans] Error checking promo eligibility:`, eligError);
+          return { ...plan, is_eligible: true }; // Default to eligible on error
+        }
+
+        return {
+          ...plan,
+          is_eligible: eligibility?.is_eligible ?? true,
+          cooldown_ends_at: eligibility?.cooldown_ends_at
+        };
+      }
+      return { ...plan, is_eligible: true };
+    }));
+
+    // Filter out ineligible promotional plans
+    const availablePlans = plansWithEligibility.filter(plan => {
+      // Always show free plan and non-promotional plans
+      if (plan.plan_type === 'free' || !plan.is_promotional) return true;
+      // For promotional plans, only show if eligible
+      return plan.is_eligible;
+    });
+
+    res.json({ plans: availablePlans });
+  } catch (err) {
+    console.error("Error fetching available subscription plans:", err);
+    res.status(500).json({ error: "No se pudieron obtener los planes disponibles." });
+  }
+});
+
+// Get user reading permissions
+app.get("/api/user/reading-permissions/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    console.log(`[Permissions] Fetching reading permissions for user: ${userId}`);
+
+    // For anonymous users, return restricted permissions
+    if (!userId || userId === 'anonymous') {
+      return res.json({
+        is_premium: false,
+        can_read_today: true,
+        can_see_future: false,
+        readings_today: 0,
+        days_since_registration: 0,
+        free_futures_remaining: 0,
+        free_futures_used: 0,
+        total_readings: 0,
+        history_limit: 0,
+        plan_name: 'Anónimo',
+        is_anonymous: true
+      });
+    }
+
+    const { data: permissions, error } = await supabase.rpc(
+      'get_user_reading_permissions',
+      { p_user_id: userId }
+    );
+
+    if (error) {
+      console.error(`[Permissions] Supabase RPC error:`, error);
+      throw error;
+    }
+
+    console.log(`[Permissions] Response:`, permissions);
+    res.json(permissions || {
+      is_premium: false,
+      can_read_today: true,
+      can_see_future: false,
+      readings_today: 0,
+      free_futures_remaining: 0,
+      history_limit: 3,
+      plan_name: 'Gratuito'
+    });
+  } catch (err) {
+    console.error("Error getting reading permissions:", err);
+    res.status(500).json({ error: "No se pudieron obtener los permisos de lectura." });
+  }
+});
+
+// Record a reading for a user
+app.post("/api/user/record-reading", async (req, res) => {
+  try {
+    const { userId, revealedFuture } = req.body;
+    console.log(`[Reading] Recording reading for user: ${userId}, revealedFuture: ${revealedFuture}`);
+
+    if (!userId) {
+      return res.status(400).json({ error: "userId es requerido" });
+    }
+
+    const { data, error } = await supabase.rpc(
+      'record_user_reading',
+      {
+        p_user_id: userId,
+        p_revealed_future: revealedFuture || false
+      }
+    );
+
+    if (error) {
+      console.error(`[Reading] Supabase RPC error:`, error);
+      throw error;
+    }
+
+    console.log(`[Reading] Recording result:`, data);
+    res.json(data);
+  } catch (err) {
+    console.error("Error recording reading:", err);
+    res.status(500).json({ error: "No se pudo registrar la lectura." });
+  }
+});
+
 // Create PayPal order
 app.post("/api/payments/create-order", async (req, res) => {
   try {
     const { planId, userId } = req.body;
+    console.log(`[Payment] Creating order for plan ${planId}, user ${userId}`);
 
     if (!planId || !userId) {
       return res.status(400).json({ error: "planId y userId son requeridos" });
@@ -443,8 +620,11 @@ app.post("/api/payments/create-order", async (req, res) => {
       .single();
 
     if (planError || !plan) {
+      console.error(`[Payment] Plan not found:`, planError);
       return res.status(404).json({ error: "Plan no encontrado" });
     }
+
+    console.log(`[Payment] Found plan: ${plan.name}, price: ${plan.price}`);
 
     if (!process.env.PAYPAL_CLIENT_ID || process.env.PAYPAL_CLIENT_ID === 'YOUR_PAYPAL_CLIENT_ID_SANDBOX') {
       const mockResponse = {
@@ -453,7 +633,8 @@ app.post("/api/payments/create-order", async (req, res) => {
           links: [{ rel: 'approve', href: 'https://sandbox.paypal.com/checkoutnow?token=MOCK_TOKEN' }]
         }
       };
-      await supabase.from('payment_transactions').insert({ user_id: userId, paypal_order_id: mockResponse.result.id, amount: plan.price, status: 'pending', transaction_data: mockResponse.result });
+      const { error: insertError } = await supabase.from('payment_transactions').insert({ user_id: userId, paypal_order_id: mockResponse.result.id, amount: plan.price, status: 'pending', plan_id: planId, transaction_data: mockResponse.result });
+      if (insertError) console.error(`[Payment] Insert error:`, insertError);
       return res.json({ orderId: mockResponse.result.id, approvalUrl: mockResponse.result.links.find(link => link.rel === 'approve')?.href, note: "Mock PayPal response" });
     }
 
@@ -474,8 +655,26 @@ app.post("/api/payments/create-order", async (req, res) => {
       }
     };
 
+    console.log(`[Payment] Calling PayPal API...`);
     const response = await ordersController.createOrder({ body: orderRequest, prefer: 'return=representation' });
-    await supabase.from('payment_transactions').insert({ user_id: userId, paypal_order_id: response.result.id, amount: plan.price, status: 'pending', transaction_data: response.result });
+    console.log(`[Payment] PayPal order created: ${response.result.id}`);
+
+    const { error: insertError } = await supabase.from('payment_transactions').insert({
+      user_id: userId,
+      paypal_order_id: response.result.id,
+      amount: plan.price,
+      status: 'pending',
+      plan_id: planId,
+      transaction_data: response.result
+    });
+
+    if (insertError) {
+      console.error(`[Payment] ❌ Insert error:`, insertError);
+      // Still return success since PayPal order was created
+    } else {
+      console.log(`[Payment] ✅ Transaction saved to database`);
+    }
+
     res.json({ orderId: response.result.id, approvalUrl: response.result.links.find(link => link.rel === 'approve')?.href });
 
   } catch (err) {
@@ -486,7 +685,183 @@ app.post("/api/payments/create-order", async (req, res) => {
 
 // Capture PayPal order
 app.post("/api/payments/capture-order", async (req, res) => {
-    // ... (logic for capturing paypal order remains the same)
+  try {
+    const { orderId, userId } = req.body;
+
+    if (!orderId || !userId) {
+      return res.status(400).json({ error: "orderId y userId son requeridos" });
+    }
+
+    console.log(`[Payment] Capturing order ${orderId} for user ${userId}`);
+
+    // 1. Find the pending transaction
+    const { data: transaction, error: txError } = await supabase
+      .from('payment_transactions')
+      .select('*')
+      .eq('paypal_order_id', orderId)
+      .eq('user_id', userId)
+      .eq('status', 'pending')
+      .single();
+
+    if (txError || !transaction) {
+      console.error(`[Payment] Transaction not found:`, txError);
+      return res.status(404).json({ error: "Transacción no encontrada o ya procesada" });
+    }
+
+    console.log(`[Payment] Found transaction:`, transaction.id);
+
+    // 1b. Get the plan details
+    const { data: plan, error: planError } = await supabase
+      .from('subscription_plans')
+      .select('*')
+      .eq('id', transaction.plan_id)
+      .single();
+
+    if (planError) {
+      console.error(`[Payment] Plan not found:`, planError);
+    }
+
+    let captureId = null;
+    let captureData = null;
+
+    // 2. Capture the payment (mock or real)
+    const isMockOrder = orderId.startsWith('MOCK_ORDER_');
+
+    if (isMockOrder) {
+      // Mock capture for development
+      console.log(`[Payment] Using mock capture for order ${orderId}`);
+      captureId = `MOCK_CAPTURE_${Date.now()}`;
+      captureData = {
+        id: captureId,
+        status: 'COMPLETED',
+        mock: true,
+        captured_at: new Date().toISOString()
+      };
+    } else {
+      // Real PayPal capture
+      console.log(`[Payment] Capturing real PayPal order ${orderId}`);
+      const ordersController = new OrdersController(paypalClient);
+
+      try {
+        const captureResponse = await ordersController.captureOrder({
+          id: orderId,
+          prefer: 'return=representation'
+        });
+
+        captureId = captureResponse.result?.purchaseUnits?.[0]?.payments?.captures?.[0]?.id;
+        captureData = captureResponse.result;
+        console.log(`[Payment] PayPal capture successful: ${captureId}`);
+      } catch (paypalError) {
+        console.error(`[Payment] PayPal capture failed:`, paypalError);
+        return res.status(400).json({ error: "No se pudo capturar el pago en PayPal" });
+      }
+    }
+
+    // 3. Update transaction to completed
+    const { error: updateTxError } = await supabase
+      .from('payment_transactions')
+      .update({
+        status: 'completed',
+        paypal_capture_id: captureId,
+        completed_at: new Date().toISOString(),
+        transaction_data: captureData
+      })
+      .eq('id', transaction.id);
+
+    if (updateTxError) {
+      console.error(`[Payment] Error updating transaction:`, updateTxError);
+      // Don't fail - payment was captured, just log the error
+    }
+
+    // 4. Calculate subscription dates
+    const durationDays = plan?.duration_days || 30;
+    const subscriptionStart = new Date();
+    const subscriptionEnd = new Date();
+    subscriptionEnd.setDate(subscriptionEnd.getDate() + durationDays);
+
+    console.log(`[Payment] Creating subscription: ${durationDays} days, ends ${subscriptionEnd.toISOString()}`);
+
+    // 4b. If this is a promotional/trial plan, record the purchase with cooldown
+    if (plan?.is_promotional && plan?.plan_type === 'trial') {
+      console.log(`[Payment] Recording promotional purchase with ${plan.cooldown_days || 14} day cooldown`);
+      try {
+        const { data: promoResult, error: promoError } = await supabase.rpc(
+          'record_promo_purchase',
+          {
+            p_user_id: userId,
+            p_offer_type: 'ritual_de_iniciacion',
+            p_cooldown_days: plan.cooldown_days || 14
+          }
+        );
+        if (promoError) {
+          console.error(`[Payment] Error recording promo purchase:`, promoError);
+        } else {
+          console.log(`[Payment] Promo purchase recorded, cooldown ends:`, promoResult?.cooldown_ends_at);
+        }
+      } catch (promoErr) {
+        console.error(`[Payment] Exception recording promo purchase:`, promoErr);
+      }
+    }
+
+    // 5. Create or update user subscription (upsert)
+    const { data: subscription, error: subError } = await supabase
+      .from('user_subscriptions')
+      .upsert({
+        user_id: userId,
+        plan_id: transaction.plan_id,
+        status: 'active',
+        subscription_start_date: subscriptionStart.toISOString(),
+        subscription_end_date: subscriptionEnd.toISOString(),
+        payment_transaction_id: transaction.id
+      }, {
+        onConflict: 'user_id'
+      })
+      .select()
+      .single();
+
+    if (subError) {
+      console.error(`[Payment] Error creating subscription:`, subError);
+      // Try alternative: check if user_subscriptions uses different conflict handling
+      const { error: insertError } = await supabase
+        .from('user_subscriptions')
+        .insert({
+          user_id: userId,
+          plan_id: transaction.plan_id,
+          status: 'active',
+          subscription_start_date: subscriptionStart.toISOString(),
+          subscription_end_date: subscriptionEnd.toISOString(),
+          payment_transaction_id: transaction.id
+        });
+
+      if (insertError && !insertError.message?.includes('duplicate')) {
+        console.error(`[Payment] Error inserting subscription:`, insertError);
+        return res.status(500).json({ error: "Error al activar la suscripción" });
+      }
+    }
+
+    console.log(`[Payment] ✅ Payment captured and subscription activated for user ${userId}`);
+
+    // 6. Return success response
+    res.json({
+      success: true,
+      message: "Pago capturado y suscripción activada",
+      subscription: {
+        plan_name: plan?.name || 'Premium',
+        start_date: subscriptionStart.toISOString(),
+        end_date: subscriptionEnd.toISOString(),
+        duration_days: durationDays
+      },
+      transaction: {
+        id: transaction.id,
+        capture_id: captureId,
+        amount: transaction.amount
+      }
+    });
+
+  } catch (err) {
+    console.error("[Payment] Error capturing order:", err);
+    res.status(500).json({ error: "No se pudo completar el pago." });
+  }
 });
 
 // Get user subscription status
@@ -496,7 +871,7 @@ app.get("/api/user/subscription/:userId", async (req, res) => {
     console.log(`[Subscription] Fetching subscription info for user: ${userId}`);
 
     const { data, error } = await supabase.rpc('get_user_subscription_info', {
-      p_user_id: userId
+      p_user_uuid: userId
     });
 
     if (error) {
@@ -518,7 +893,162 @@ app.get("/api/user/subscription/:userId", async (req, res) => {
   }
 });
 
-// ... other endpoints ...
+// =======================================
+// ADMIN ENDPOINTS
+// =======================================
+
+// Admin auth middleware
+const adminAuth = (req, res, next) => {
+  const adminPassword = req.headers['x-admin-password'];
+  const validPassword = process.env.ADMIN_PASSWORD;
+
+  if (!validPassword) {
+    return res.status(500).json({ error: "Admin password not configured" });
+  }
+
+  if (adminPassword !== validPassword) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
+
+  next();
+};
+
+// Get all subscriptions
+app.get("/api/admin/subscriptions", adminAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('user_subscriptions')
+      .select(`
+        *,
+        subscription_plans (name, price, duration_days)
+      `)
+      .order('created_at', { ascending: false });
+
+    if (error) throw error;
+
+    // Get user emails from auth.users
+    const userIds = data.map(s => s.user_id);
+    const { data: users } = await supabase.auth.admin.listUsers();
+
+    const userMap = {};
+    users?.users?.forEach(u => {
+      userMap[u.id] = u.email;
+    });
+
+    const subscriptions = data.map(s => ({
+      ...s,
+      user_email: userMap[s.user_id] || 'Unknown',
+      plan_name: s.subscription_plans?.name,
+      is_active: s.status === 'active' && new Date(s.subscription_end_date) > new Date()
+    }));
+
+    res.json({ subscriptions });
+  } catch (err) {
+    console.error("Admin error:", err);
+    res.status(500).json({ error: "Error fetching subscriptions" });
+  }
+});
+
+// Get all payments
+app.get("/api/admin/payments", adminAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('payment_transactions')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(100);
+
+    if (error) throw error;
+
+    // Get user emails
+    const userIds = [...new Set(data.map(p => p.user_id))];
+    const { data: users } = await supabase.auth.admin.listUsers();
+
+    const userMap = {};
+    users?.users?.forEach(u => {
+      userMap[u.id] = u.email;
+    });
+
+    const payments = data.map(p => ({
+      ...p,
+      user_email: userMap[p.user_id] || 'Unknown',
+      plan_name: p.plan_id ? `Plan #${p.plan_id}` : 'N/A'
+    }));
+
+    res.json({ payments });
+  } catch (err) {
+    console.error("Admin error:", err);
+    res.status(500).json({ error: "Error fetching payments" });
+  }
+});
+
+// Get stats summary
+app.get("/api/admin/stats", adminAuth, async (req, res) => {
+  try {
+    // Total users
+    const { data: users } = await supabase.auth.admin.listUsers();
+    const totalUsers = users?.users?.length || 0;
+
+    // Active subscriptions
+    const { count: activeSubscriptions } = await supabase
+      .from('user_subscriptions')
+      .select('*', { count: 'exact', head: true })
+      .eq('status', 'active')
+      .gt('subscription_end_date', new Date().toISOString());
+
+    // Total revenue
+    const { data: payments } = await supabase
+      .from('payment_transactions')
+      .select('amount')
+      .eq('status', 'completed');
+
+    const totalRevenue = payments?.reduce((sum, p) => sum + (p.amount || 0), 0) || 0;
+
+    // Total chats
+    const { count: totalChats } = await supabase
+      .from('chats')
+      .select('*', { count: 'exact', head: true });
+
+    // Total messages
+    const { count: totalMessages } = await supabase
+      .from('messages')
+      .select('*', { count: 'exact', head: true });
+
+    res.json({
+      totalUsers,
+      activeSubscriptions: activeSubscriptions || 0,
+      totalRevenue,
+      totalChats: totalChats || 0,
+      totalMessages: totalMessages || 0
+    });
+  } catch (err) {
+    console.error("Admin error:", err);
+    res.status(500).json({ error: "Error fetching stats" });
+  }
+});
+
+// Clean up pending transactions (admin)
+app.delete("/api/admin/pending-transactions", adminAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('payment_transactions')
+      .delete()
+      .eq('status', 'pending')
+      .select();
+
+    if (error) throw error;
+
+    console.log(`[Admin] Deleted ${data?.length || 0} pending transactions`);
+    res.json({
+      success: true,
+      deleted: data?.length || 0,
+      message: `Se eliminaron ${data?.length || 0} transacciones pendientes`
+    });
+  } catch (err) {
+    console.error("Admin error:", err);
+    res.status(500).json({ error: "Error deleting pending transactions" });
+  }
+});
 
 app.listen(3000, () => {
   console.log("🚀 Servidor de Bottarot escuchando en http://localhost:3000");
