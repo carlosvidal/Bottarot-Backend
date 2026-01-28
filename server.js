@@ -11,13 +11,41 @@ import paypalClient from "./paypal-config.js";
 import pkg from "@paypal/paypal-server-sdk";
 const { OrdersController } = pkg;
 
+// Security middleware
+import {
+  helmetConfig,
+  corsConfig,
+  generalLimiter,
+  chatLimiter,
+  paymentLimiter,
+  sanitizeInput,
+  requestLogger,
+  errorHandler,
+  notFoundHandler
+} from './security.js';
+
 const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY;
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
 const app = express();
-app.use(cors());
-app.use(express.json());
+
+// Trust proxy (important for rate limiting behind reverse proxy)
+app.set('trust proxy', 1);
+
+// Apply security middleware
+app.use(helmetConfig);
+app.use(cors(corsConfig()));
+app.use(express.json({ limit: '10mb' })); // Limit payload size
+app.use(sanitizeInput); // Sanitize against NoSQL injection
+
+// Apply general rate limiting to all API routes
+app.use('/api/', generalLimiter);
+
+// Request logging (skip in test environment)
+if (process.env.NODE_ENV !== 'test') {
+  app.use(requestLogger);
+}
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
@@ -111,7 +139,8 @@ const drawCards = (numCards = 3) => {
 // NEW MAIN CHAT ENDPOINT
 // =======================================
 
-app.post("/api/chat/message", async (req, res) => {
+// Apply chat-specific rate limiting
+app.post("/api/chat/message", chatLimiter, async (req, res) => {
     const { question, history, personalContext, userId, chatId } = req.body;
 
     if (!question) {
@@ -603,8 +632,8 @@ app.post("/api/user/record-reading", async (req, res) => {
   }
 });
 
-// Create PayPal order
-app.post("/api/payments/create-order", async (req, res) => {
+// Create PayPal order (with payment rate limiting)
+app.post("/api/payments/create-order", paymentLimiter, async (req, res) => {
   try {
     const { planId, userId } = req.body;
     console.log(`[Payment] Creating order for plan ${planId}, user ${userId}`);
@@ -683,8 +712,8 @@ app.post("/api/payments/create-order", async (req, res) => {
   }
 });
 
-// Capture PayPal order
-app.post("/api/payments/capture-order", async (req, res) => {
+// Capture PayPal order (with payment rate limiting)
+app.post("/api/payments/capture-order", paymentLimiter, async (req, res) => {
   try {
     const { orderId, userId } = req.body;
 
@@ -1050,6 +1079,29 @@ app.delete("/api/admin/pending-transactions", adminAuth, async (req, res) => {
   }
 });
 
-app.listen(3000, () => {
-  console.log("🚀 Servidor de Free Tarot Fun escuchando en http://localhost:3000");
+// =======================================
+// HEALTH CHECK & ERROR HANDLING
+// =======================================
+
+// Health check endpoint (no rate limit)
+app.get('/health', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+    environment: process.env.NODE_ENV || 'development'
+  });
+});
+
+// 404 handler (must be after all routes)
+app.use(notFoundHandler);
+
+// Global error handler (must be last)
+app.use(errorHandler);
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`🚀 Servidor de Free Tarot Fun escuchando en http://localhost:${PORT}`);
+  console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🔒 Security middleware enabled`);
 });
