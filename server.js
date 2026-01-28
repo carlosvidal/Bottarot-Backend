@@ -650,7 +650,7 @@ app.post("/api/payments/create-order", async (req, res) => {
       applicationContext: {
         returnUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/checkout-success`,
         cancelUrl: `${process.env.FRONTEND_URL || 'http://localhost:5173'}/checkout`,
-        brandName: 'Bottarot - Oráculo IA',
+        brandName: 'Free Tarot Fun',
         userAction: 'PAY_NOW'
       }
     };
@@ -1051,5 +1051,5 @@ app.delete("/api/admin/pending-transactions", adminAuth, async (req, res) => {
 });
 
 app.listen(3000, () => {
-  console.log("🚀 Servidor de Bottarot escuchando en http://localhost:3000");
+  console.log("🚀 Servidor de Free Tarot Fun escuchando en http://localhost:3000");
 });

@@ -1,8 +1,9 @@
-# 📊 Análisis del Backend de Bottarot
+# 📊 Análisis del Backend de Free Tarot Fun
 
 **Fecha:** 9 de Noviembre, 2025
 **Versión Backend:** 2.0-dummy-fix
 **Rama:** claude/bottarot-backend-analysis-011CUy4BZmXfohYZ3QGtg41P
+**Nota:** Este análisis se realizó cuando el proyecto se llamaba "Bottarot"
 
 ---
 

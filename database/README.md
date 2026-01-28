@@ -1,4 +1,4 @@
-# Database Schema - Bottarot
+# Database Schema - Free Tarot Fun
 
 ## Files
 
