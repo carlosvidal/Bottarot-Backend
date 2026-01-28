@@ -55,15 +55,11 @@ app.post("/api/payments/capture-order", paymentLimiter, ...);
 ```
 Protege contra fraude y abuso en pagos.
 
-### 4. Input Sanitization
+### 4. Input Validation
 
-Sanitización automática contra inyecciones NoSQL:
+**Nota:** NoSQL injection protection (express-mongo-sanitize) fue removido porque usamos **PostgreSQL (Supabase)**, no MongoDB. PostgreSQL tiene protección nativa contra SQL injection cuando se usan consultas parametrizadas, que es lo que usa Supabase.
 
-```javascript
-app.use(sanitizeInput);
-```
-
-Remueve caracteres peligrosos (`$`, `.`) del input del usuario.
+Para mayor seguridad, se recomienda implementar `express-validator` en endpoints críticos (ver sección de Próximos Pasos).
 
 ### 5. Payload Size Limit
 
@@ -168,8 +164,7 @@ npm audit fix
 
 - `helmet@^8.1.0` - Security headers
 - `express-rate-limit@^8.2.1` - Rate limiting
-- `express-validator@^7.3.1` - Input validation
-- `express-mongo-sanitize@^2.2.0` - NoSQL injection prevention
+- `express-validator@^7.3.1` - Input validation (recomendado para implementar)
 
 ## Próximos Pasos Recomendados
 

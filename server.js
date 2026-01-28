@@ -18,7 +18,6 @@ import {
   generalLimiter,
   chatLimiter,
   paymentLimiter,
-  sanitizeInput,
   requestLogger,
   errorHandler,
   notFoundHandler
@@ -37,7 +36,6 @@ app.set('trust proxy', 1);
 app.use(helmetConfig);
 app.use(cors(corsConfig()));
 app.use(express.json({ limit: '10mb' })); // Limit payload size
-app.use(sanitizeInput); // Sanitize against NoSQL injection
 
 // Apply general rate limiting to all API routes
 app.use('/api/', generalLimiter);

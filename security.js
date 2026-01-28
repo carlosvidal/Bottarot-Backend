@@ -5,7 +5,6 @@
 
 import rateLimit from 'express-rate-limit';
 import helmet from 'helmet';
-import mongoSanitize from 'express-mongo-sanitize';
 
 /**
  * Configure Helmet for security headers
@@ -115,18 +114,8 @@ export const paymentLimiter = rateLimit({
 });
 
 /**
- * MongoDB injection sanitizer
- * Removes $ and . characters from user input
- */
-export const sanitizeInput = mongoSanitize({
-  replaceWith: '_',
-  onSanitize: ({ req, key }) => {
-    console.warn(`Sanitized potentially malicious input on key: ${key}`);
-  }
-});
-
-/**
  * Request logging middleware
+ * Note: Input sanitization removed as we use PostgreSQL (Supabase), not MongoDB
  */
 export function requestLogger(req, res, next) {
   const start = Date.now();
