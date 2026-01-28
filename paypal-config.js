@@ -1,3 +1,4 @@
+import 'dotenv/config'
 import pkg from '@paypal/paypal-server-sdk'
 const { Client, Environment } = pkg
 
