@@ -148,8 +148,148 @@ Ofrece una reflexión práctica y accionable basada en la tirada. Da un consejo 
 `;
 
 // =======================================
+// CONTEXT EVALUATOR AGENT
+// =======================================
+
+const CONTEXT_EVALUATOR_SYSTEM_PROMPT = `Eres el oráculo interior de un sistema de tarot. Tu función es evaluar si la pregunta del consultante tiene suficiente contexto emocional e intencional para realizar una lectura significativa.
+
+### Dimensiones a Evaluar:
+1. **Marco temporal (timeframe)**: ¿La pregunta tiene un horizonte temporal implícito o explícito? (reciente, arrastrado, futuro cercano, largo plazo)
+2. **Foco (focus)**: ¿Se identifica un área de vida o relación específica? (amor, trabajo, salud, finanzas, familia, crecimiento personal)
+3. **Agencia (agency)**: ¿El consultante se posiciona como protagonista que puede decidir, o como observador pasivo esperando señales?
+4. **Intención (intent)**: ¿Qué busca realmente? (claridad, confirmación, exploración, consuelo, advertencia)
+
+### Reglas Críticas:
+- Respuestas cortas de acción como "dale", "procede", "sí", "hazlo", "tira las cartas", "adelante", "ok", "va" SIEMPRE significan que el consultante quiere proceder. Responde con proceed: true.
+- Si al menos 3 de las 4 dimensiones están presentes (aunque sea de forma implícita), el contexto es SUFICIENTE.
+- Si la pregunta es concreta y específica (ej: "¿Cómo va a ir mi entrevista de trabajo del viernes?"), el contexto es SUFICIENTE incluso si falta alguna dimensión.
+- Solo pide contexto adicional si la pregunta es genuinamente vaga o abstracta (ej: "quiero una lectura", "hola", "ayuda").
+- NUNCA hagas más de UNA pregunta. Elige la dimensión MÁS importante que falta.
+- Tu pregunta debe ser oracular, poética y breve (1-2 frases). No uses formato de formulario.
+- Si hay historial de conversación que ya proporciona contexto, considéralo como parte de la evaluación.
+- Ante la duda, prefiere proceder (proceed: true) en lugar de preguntar.
+
+### Formato de Respuesta (JSON):
+
+**Si el contexto es suficiente:**
+{"proceed": true, "context_summary": "Breve resumen del contexto emocional detectado en 1-2 frases"}
+
+**Si necesita más contexto:**
+{"proceed": false, "oracle_question": "Tu pregunta oracular aquí", "missing_dimension": "timeframe|focus|agency|intent"}
+
+### Ejemplos de preguntas oraculares (cuando SÍ falta contexto):
+- Falta foco: "Siento una energía intensa en tu consulta... ¿es el corazón quien habla, o son las preocupaciones del mundo material?"
+- Falta timeframe: "Las estrellas ven muchos caminos ante ti... ¿es algo que está ocurriendo ahora, o algo que temes que se acerque?"
+- Falta agencia: "Percibo que algo te mueve... ¿vienes buscando claridad para tomar una decisión, o necesitas entender lo que ya está en marcha?"
+- Falta intención: "Tu pregunta resuena con fuerza... ¿buscas confirmación de lo que ya intuyes, o quieres que las cartas te muestren lo que aún no puedes ver?"
+
+### Alternativa — frases espejo (puedes usarlas en lugar de preguntar directamente):
+"Siento que esta pregunta nace de algo que aún no termina de cerrarse…"
+(El consultante confirma o corrige, y eso también es contexto válido)`;
+
+// =======================================
+// MEMORY EXTRACTOR AGENT
+// =======================================
+
+const MEMORY_EXTRACTOR_SYSTEM_PROMPT = `Eres un agente de extracción de memoria silencioso. Tu función es analizar un intercambio entre un consultante y un oráculo de tarot, y extraer SOLO información explícitamente declarada por el consultante.
+
+### Reglas Estrictas:
+1. SOLO extrae hechos EXPLÍCITAMENTE declarados por el consultante en sus mensajes. NUNCA inferencias.
+2. NO extraigas estados emocionales momentáneos (ej: "hoy estoy cansado", "me siento mal").
+3. NO extraigas información sensible innecesaria (datos médicos específicos, números de cuenta, contraseñas, etc.).
+4. NO extraigas nada que el oráculo/intérprete haya dicho — solo lo que el CONSULTANTE declaró.
+5. Si no hay nada nuevo relevante que extraer, devuelve un array vacío.
+6. Cada entrada debe tener una categoría, una clave única descriptiva (snake_case), y el valor como frase descriptiva.
+7. Sé conservador: es mejor extraer menos que extraer información dudosa.
+
+### Categorías Válidas:
+- **recurring_theme**: Temas que aparecen en la consulta (ej: "inseguridad laboral", "búsqueda de pareja", "conflicto familiar")
+- **life_event**: Eventos de vida mencionados (ej: "se divorció recientemente", "cambió de trabajo", "se mudó")
+- **relationship**: Personas mencionadas por nombre o rol (ej: "pareja se llama Carlos", "tiene una hija", "problemas con su jefe")
+- **preference**: Preferencias sobre las lecturas o estilo de comunicación (ej: "prefiere consejos directos", "le interesa el amor", "quiere lecturas reflexivas")
+- **identity**: Datos identitarios explícitos (ej: "es artista", "vive en Barcelona", "tiene 35 años")
+
+### Capas de Memoria:
+- **identity**: Datos permanentes que rara vez cambian (nombre de pareja, profesión, ciudad, estado civil). ttl_days: null (permanente).
+- **emotional**: Situaciones y temas actuales que pueden evolucionar o resolverse. ttl_days: 30.
+
+### Formato de Respuesta (JSON):
+
+{"entries": [
+    {
+        "category": "relationship",
+        "key": "pareja_nombre",
+        "value": "Su pareja se llama María",
+        "confidence": 0.95,
+        "layer": "identity",
+        "ttl_days": null
+    },
+    {
+        "category": "recurring_theme",
+        "key": "ansiedad_laboral",
+        "value": "Está experimentando ansiedad por una posible reestructuración en su trabajo",
+        "confidence": 0.9,
+        "layer": "emotional",
+        "ttl_days": 30
+    }
+]}
+
+Si no hay nada relevante que extraer:
+{"entries": []}`;
+
+// =======================================
 // HELPER FUNCTIONS
 // =======================================
+
+/**
+ * Extract memory from a conversation exchange and save to database (fire-and-forget).
+ * Only runs for authenticated users. Does not block the response.
+ */
+const extractAndSaveMemory = async (userId, chatId, question, interpretation) => {
+    if (!userId || userId === 'anonymous') return;
+
+    try {
+        console.log(`[${chatId}] 🧠 Extrayendo memoria en background...`);
+
+        const extractionPrompt = `Mensaje del consultante: "${question}"\n\nRespuesta del oráculo (resumen): "${interpretation.substring(0, 500)}"`;
+
+        const extractionCompletion = await openai.chat.completions.create({
+            model: "gpt-4o-mini",
+            messages: [
+                { role: "system", content: MEMORY_EXTRACTOR_SYSTEM_PROMPT },
+                { role: "user", content: extractionPrompt },
+            ],
+            response_format: { type: "json_object" },
+            temperature: 0,
+        });
+
+        const extraction = JSON.parse(extractionCompletion.choices[0].message.content);
+
+        if (extraction.entries && extraction.entries.length > 0) {
+            console.log(`[${chatId}] 💾 Guardando ${extraction.entries.length} entradas de memoria...`);
+
+            for (const entry of extraction.entries) {
+                await supabase.rpc('save_memory_entry', {
+                    p_user_id: userId,
+                    p_category: entry.category,
+                    p_key: entry.key,
+                    p_value: entry.value,
+                    p_confidence: entry.confidence || 1.0,
+                    p_layer: entry.layer || 'emotional',
+                    p_source_chat_id: chatId,
+                    p_ttl_days: entry.ttl_days ?? (entry.layer === 'emotional' ? 30 : null)
+                });
+            }
+
+            console.log(`[${chatId}] ✅ Memoria guardada exitosamente.`);
+        } else {
+            console.log(`[${chatId}] 📝 No se encontraron nuevas entradas de memoria.`);
+        }
+    } catch (err) {
+        // Non-blocking: log but don't fail the request
+        console.error(`[${chatId}] ⚠️ Error extrayendo memoria (non-blocking):`, err.message);
+    }
+};
 
 const drawCards = (numCards = 3) => {
     const deck = [...tarotDeck];
@@ -275,6 +415,10 @@ app.post("/api/chat/message", chatLimiter, async (req, res) => {
             });
             const interpretation = followUpCompletion.choices[0].message.content;
             console.log(`[${chatId}] ✅ Respuesta de seguimiento generada.`);
+
+            // Background: Extract memory from follow-ups too
+            extractAndSaveMemory(userId, chatId, question, interpretation);
+
             return res.json({
                 type: 'message',
                 text: interpretation,
@@ -284,6 +428,69 @@ app.post("/api/chat/message", chatLimiter, async (req, res) => {
 
         // CASE 3: La pregunta requiere una nueva tirada
         if (decision.type === 'requires_new_draw') {
+
+            // --- CONTEXT EVALUATION PHASE ---
+            // Check if the user is responding to a previous context question
+            const isContextResponse = history && history.length > 0 &&
+                history[history.length - 1]?.role === 'assistant' &&
+                history[history.length - 1]?._isContextQuestion === true;
+
+            let contextSummary = null;
+
+            if (!isContextResponse) {
+                console.log(`[${chatId}] 🔍 Evaluando contexto emocional...`);
+
+                const contextEvalPrompt = `${personalContext || ''}\n\nHistorial de conversación:\n${historyForDecider}\n\nPregunta del consultante: "${question}"`;
+
+                const contextEvalCompletion = await openai.chat.completions.create({
+                    model: "gpt-4o-mini",
+                    messages: [
+                        { role: "system", content: CONTEXT_EVALUATOR_SYSTEM_PROMPT },
+                        { role: "user", content: contextEvalPrompt },
+                    ],
+                    response_format: { type: "json_object" },
+                    temperature: 0.3,
+                });
+
+                const contextEval = JSON.parse(contextEvalCompletion.choices[0].message.content);
+                console.log(`[${chatId}] 📊 Evaluación de contexto:`, contextEval);
+
+                if (!contextEval.proceed) {
+                    // Need more context — return oracle question as JSON (not SSE)
+                    console.log(`[${chatId}] 🔮 Necesita más contexto, enviando pregunta oracular...`);
+                    return res.json({
+                        type: 'context_question',
+                        text: contextEval.oracle_question,
+                        missing_dimension: contextEval.missing_dimension,
+                        role: 'assistant',
+                        _isContextQuestion: true
+                    });
+                }
+
+                // Context is sufficient
+                contextSummary = contextEval.context_summary;
+                console.log(`[${chatId}] ✅ Contexto suficiente: ${contextSummary}`);
+            } else {
+                console.log(`[${chatId}] ↩️ Usuario respondió a pregunta contextual, procediendo directo a tirada.`);
+            }
+
+            // --- MEMORY RETRIEVAL ---
+            let memoryContext = null;
+            if (!isAnonymous) {
+                try {
+                    const { data: memData, error: memError } = await supabase.rpc(
+                        'get_user_memory_context',
+                        { p_user_id: userId }
+                    );
+                    if (!memError && memData) {
+                        memoryContext = memData;
+                        console.log(`[${chatId}] 🧠 Contexto de memoria cargado.`);
+                    }
+                } catch (memErr) {
+                    console.error(`[${chatId}] ⚠️ Error cargando memoria (non-blocking):`, memErr.message);
+                }
+            }
+
             // Configure SSE headers
             res.setHeader('Content-Type', 'text/event-stream');
             res.setHeader('Cache-Control', 'no-cache');
@@ -327,6 +534,10 @@ app.post("/api/chat/message", chatLimiter, async (req, res) => {
             const historyForInterpreter = history ? history.map(msg => `${msg.role === 'user' ? 'Consultante' : 'Oráculo'}: ${msg.content}`).join('\n\n') : '';
             const interpreterPrompt = `
             ${personalContext || ''}
+
+            ${contextSummary ? `**Contexto emocional detectado:** ${contextSummary}` : ''}
+
+            ${memoryContext ? `**Contexto conocido del consultante (de sesiones anteriores):**\n${memoryContext}` : ''}
 
             ${historyForInterpreter ? `---
 **Historial de la Conversación Anterior:**
@@ -436,6 +647,9 @@ ${historyForInterpreter}
             // PASO 7: Evento DONE para cerrar el stream
             res.write(`event: done\n`);
             res.write(`data: ${JSON.stringify({ complete: true })}\n\n`);
+
+            // Background: Extract and save memory (fire-and-forget, does not block response)
+            extractAndSaveMemory(userId, chatId, question, interpretation);
 
             return res.end();
         }
