@@ -7,6 +7,7 @@ import fetch from "node-fetch";
 import { OpenAI } from "openai";
 import { createClient } from "@supabase/supabase-js";
 import { tarotDeck } from "./data/tarotDeck.js";
+import { parseInterpretationSections, filterSectionsForPaywall } from "./utils/sectionParser.js";
 import paypalClient from "./paypal-config.js";
 import pkg from "@paypal/paypal-server-sdk";
 const { OrdersController } = pkg;
@@ -97,14 +98,30 @@ const INTERPRETER_SYSTEM_PROMPT = `Eres una experta en tarot con décadas de exp
 
 ### Reglas Clave:
 1.  **Relaciona Siempre**: Conecta cada carta y la interpretación general directamente con la **pregunta del usuario**.
-2.  **Contexto Personal**: Si se te proporciona información del consultante (nombre, edad, etc.), **úsala** para personalizar el saludo y el tono. (Ej: "Buenas noches, Carlos. Veo que tu cumpleaños se acerca, una época potente para la reflexión. Analicemos tu pregunta sobre tu carrera...").
+2.  **Contexto Personal**: Si se te proporciona información del consultante (nombre, edad, etc.), **úsala** para personalizar el saludo y el tono.
 3.  **Historial de Chat**: Si hay un historial, úsalo para dar continuidad a la conversación. Evita repetir lo que ya dijiste.
 4.  **Tono**: Místico, poético, pero claro y accionable. Usa un lenguaje empático y evita afirmaciones absolutas o catastróficas.
-5.  **Estructura**:
-    *   **Saludo y Conexión**: Saluda (si hay contexto personal) y conecta con la pregunta.
-    *   **Análisis de Cartas**: Describe brevemente cada carta en su posición.
-    *   **Síntesis**: Unifica el mensaje de las cartas en una narrativa coherente.
-    *   **Consejo Final**: Ofrece una reflexión o un consejo práctico basado en la tirada.
+
+### ESTRUCTURA OBLIGATORIA:
+Tu respuesta DEBE seguir EXACTAMENTE esta estructura con estos encabezados de nivel 2 (##). No omitas ninguno. No cambies los nombres de los encabezados. No agregues encabezados adicionales.
+
+## Saludo
+Saluda al consultante (si hay contexto personal) y conecta emocionalmente con su pregunta. Breve, 1-2 frases.
+
+## Pasado
+Interpreta la carta en posición Pasado. Relaciona con la pregunta del consultante. Describe cómo las energías pasadas influyen en su situación actual.
+
+## Presente
+Interpreta la carta en posición Presente. Relaciona con la pregunta del consultante. Describe la energía actual y lo que está sucediendo ahora.
+
+## Futuro
+Interpreta la carta en posición Futuro. Relaciona con la pregunta del consultante. Describe las tendencias y posibilidades que se vislumbran.
+
+## Síntesis
+Unifica el mensaje de las tres cartas en una narrativa coherente. Conecta pasado, presente y futuro en un mensaje integrado sobre la pregunta del consultante.
+
+## Consejo
+Ofrece una reflexión práctica y accionable basada en la tirada. Da un consejo concreto que el consultante pueda aplicar.
 `;
 
 // =======================================
@@ -314,10 +331,37 @@ ${historyForInterpreter}
             const interpretation = interpreterCompletion.choices[0].message.content;
             console.log(`[${chatId}] ✅ Interpretación generada.`);
 
-            // PASO 5: Enviar interpretación al cliente
-            console.log(`[${chatId}] 📤 Enviando interpretación al cliente...`);
+            // PASO 5: Parsear secciones y filtrar según permisos
+            const sections = parseInterpretationSections(interpretation);
+            const clientSections = filterSectionsForPaywall(sections, futureHidden);
+
+            // PASO 6: Enviar secciones al cliente
+            console.log(`[${chatId}] 📤 Enviando secciones al cliente (futureHidden=${futureHidden}, sectioned=${sections._sectioned})...`);
+
+            if (sections._sectioned) {
+                const sectionOrder = ['saludo', 'pasado', 'presente', 'futuro', 'sintesis', 'consejo'];
+                for (const sectionKey of sectionOrder) {
+                    if (clientSections[sectionKey]) {
+                        res.write(`event: section\n`);
+                        res.write(`data: ${JSON.stringify({
+                            section: sectionKey,
+                            text: clientSections[sectionKey],
+                            isTeaser: sectionKey === 'futuro' && futureHidden
+                        })}\n\n`);
+                        if (res.flush) res.flush();
+                    }
+                }
+            }
+
+            // Legacy: also send full visible text as interpretation event (backward compat)
+            const visibleText = sections._sectioned
+                ? ['saludo', 'pasado', 'presente', 'futuro', 'sintesis', 'consejo']
+                    .filter(k => clientSections[k])
+                    .map(k => clientSections[k])
+                    .join('\n\n')
+                : interpretation;
             res.write(`event: interpretation\n`);
-            res.write(`data: ${JSON.stringify({ text: interpretation })}\n\n`);
+            res.write(`data: ${JSON.stringify({ text: visibleText })}\n\n`);
 
             // PASO 6: Enviar título si está disponible (fue generado en paralelo)
             if (titlePromise) {
