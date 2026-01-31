@@ -404,6 +404,143 @@ ${historyForInterpreter}
 
 
 // =======================================
+// CHAT TRANSFER & SECTION REVEAL ENDPOINTS
+// =======================================
+
+// Transfer anonymous chat to authenticated user (with in-memory messages)
+app.post("/api/chat/transfer", async (req, res) => {
+    const { chatId, newUserId, messages } = req.body;
+
+    if (!chatId || !newUserId) {
+        return res.status(400).json({ error: "chatId y newUserId son requeridos" });
+    }
+
+    try {
+        console.log(`[Transfer] Transferring chat ${chatId} to user ${newUserId}, messages: ${messages?.length || 0}`);
+
+        // Check if chat already exists in DB
+        const { data: existingChat } = await supabase
+            .from('chats')
+            .select('id')
+            .eq('id', chatId)
+            .maybeSingle();
+
+        if (existingChat) {
+            // Chat exists — update ownership
+            await supabase
+                .from('chats')
+                .update({ user_id: newUserId })
+                .eq('id', chatId);
+
+            await supabase
+                .from('messages')
+                .update({ user_id: newUserId })
+                .eq('chat_id', chatId);
+
+            console.log(`[Transfer] Updated existing chat ownership to ${newUserId}`);
+        } else if (messages && messages.length > 0) {
+            // Chat doesn't exist — create it with provided messages
+            const title = messages.find(m => m.role === 'user')?.content?.substring(0, 50) || 'Chat transferido';
+
+            await supabase
+                .from('chats')
+                .insert({ id: chatId, user_id: newUserId, title });
+
+            // Insert messages in order
+            for (const msg of messages) {
+                await supabase.rpc('save_message', {
+                    p_chat_id: chatId,
+                    p_user_id: newUserId,
+                    p_role: msg.role,
+                    p_content: msg.content,
+                    p_cards: msg.cards || null
+                });
+            }
+
+            console.log(`[Transfer] Created new chat with ${messages.length} messages for user ${newUserId}`);
+        } else {
+            return res.status(404).json({ error: "Chat no encontrado y no se proporcionaron mensajes" });
+        }
+
+        res.json({ success: true, chatId });
+    } catch (err) {
+        console.error("[Transfer] Error:", err);
+        res.status(500).json({ error: "Error al transferir el chat" });
+    }
+});
+
+// Get full unfiltered sections for a message (after payment/auth)
+app.get("/api/chat/message/:chatId/:messageId/full-sections", async (req, res) => {
+    const { chatId, messageId } = req.params;
+    const { userId } = req.query;
+
+    if (!userId) {
+        return res.status(400).json({ error: "userId es requerido" });
+    }
+
+    try {
+        console.log(`[FullSections] Fetching for chat=${chatId}, message=${messageId}, user=${userId}`);
+
+        // Verify user can see future
+        const { data: permissions, error: permError } = await supabase.rpc(
+            'get_user_reading_permissions',
+            { p_user_id: userId }
+        );
+
+        if (permError) {
+            console.error(`[FullSections] Permission check error:`, permError);
+            return res.status(500).json({ error: "Error verificando permisos" });
+        }
+
+        const canSeeFuture = permissions?.can_see_future || permissions?.is_premium;
+        if (!canSeeFuture) {
+            return res.status(403).json({ error: "No tienes permiso para ver el futuro completo" });
+        }
+
+        // Fetch the message
+        const { data: message, error: msgError } = await supabase
+            .from('messages')
+            .select('content, user_id')
+            .eq('id', messageId)
+            .eq('chat_id', chatId)
+            .maybeSingle();
+
+        if (msgError || !message) {
+            console.error(`[FullSections] Message not found:`, msgError);
+            return res.status(404).json({ error: "Mensaje no encontrado" });
+        }
+
+        // Verify ownership
+        if (message.user_id !== userId) {
+            return res.status(403).json({ error: "No tienes acceso a este mensaje" });
+        }
+
+        // Parse v2 content
+        let sections = null;
+        try {
+            const parsed = JSON.parse(message.content);
+            if (parsed._version === 2 && parsed.sections) {
+                sections = {};
+                const sectionOrder = ['saludo', 'pasado', 'presente', 'futuro', 'sintesis', 'consejo'];
+                for (const key of sectionOrder) {
+                    if (parsed.sections[key]) {
+                        sections[key] = { text: parsed.sections[key], isTeaser: false };
+                    }
+                }
+            }
+        } catch (e) {
+            // v1 plain text — no sections to reveal
+            return res.json({ sections: null, rawText: message.content });
+        }
+
+        res.json({ sections });
+    } catch (err) {
+        console.error("[FullSections] Error:", err);
+        res.status(500).json({ error: "Error al obtener secciones completas" });
+    }
+});
+
+// =======================================
 // PAYPAL & OTHER ENDPOINTS (UNCHANGED)
 // =======================================
 
