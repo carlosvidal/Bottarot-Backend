@@ -28,6 +28,29 @@ const supabaseUrl = process.env.SUPABASE_URL;
 const supabaseServiceKey = process.env.SUPABASE_SERVICE_KEY;
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+// In-memory cache for anonymous user interpretations (full unfiltered content)
+// Key: chatId, Value: { messages: [...], timestamp }
+// Entries expire after 30 minutes
+const anonymousInterpretationCache = new Map();
+const ANON_CACHE_TTL = 30 * 60 * 1000; // 30 minutes
+
+function cacheAnonymousMessage(chatId, messageData) {
+    let entry = anonymousInterpretationCache.get(chatId);
+    if (!entry) {
+        entry = { messages: [], timestamp: Date.now() };
+        anonymousInterpretationCache.set(chatId, entry);
+    }
+    entry.messages.push(messageData);
+    entry.timestamp = Date.now();
+
+    // Cleanup old entries
+    for (const [key, val] of anonymousInterpretationCache) {
+        if (Date.now() - val.timestamp > ANON_CACHE_TTL) {
+            anonymousInterpretationCache.delete(key);
+        }
+    }
+}
+
 const app = express();
 
 // Trust proxy (important for rate limiting behind reverse proxy)
@@ -335,6 +358,30 @@ ${historyForInterpreter}
             const sections = parseInterpretationSections(interpretation);
             const clientSections = filterSectionsForPaywall(sections, futureHidden);
 
+            // Cache full unfiltered content for anonymous users (used during transfer)
+            if (isAnonymous && sections._sectioned) {
+                const fullContent = JSON.stringify({
+                    _version: 2,
+                    sections: Object.fromEntries(
+                        ['saludo', 'pasado', 'presente', 'futuro', 'sintesis', 'consejo']
+                            .filter(k => sections[k])
+                            .map(k => [k, sections[k]])
+                    ),
+                    rawText: interpretation
+                });
+                cacheAnonymousMessage(chatId, {
+                    role: 'user',
+                    content: question,
+                    cards: null
+                });
+                cacheAnonymousMessage(chatId, {
+                    role: 'assistant',
+                    content: fullContent,
+                    cards: drawnCards
+                });
+                console.log(`[${chatId}] 💾 Cached full interpretation for anonymous user`);
+            }
+
             // PASO 6: Enviar secciones al cliente
             console.log(`[${chatId}] 📤 Enviando secciones al cliente (futureHidden=${futureHidden}, sectioned=${sections._sectioned})...`);
 
@@ -416,7 +463,18 @@ app.post("/api/chat/transfer", async (req, res) => {
     }
 
     try {
-        console.log(`[Transfer] Transferring chat ${chatId} to user ${newUserId}, messages: ${messages?.length || 0}`);
+        // Prefer server-side cached messages (full unfiltered) over client-provided (filtered)
+        const cachedEntry = anonymousInterpretationCache.get(chatId);
+        const messagesToSave = (cachedEntry && cachedEntry.messages.length > 0)
+            ? cachedEntry.messages
+            : messages;
+
+        console.log(`[Transfer] Transferring chat ${chatId} to user ${newUserId}, messages: ${messagesToSave?.length || 0} (source: ${cachedEntry ? 'server-cache' : 'client'})`);
+
+        // Clean up cache entry after use
+        if (cachedEntry) {
+            anonymousInterpretationCache.delete(chatId);
+        }
 
         // Check if chat already exists in DB
         const { data: existingChat } = await supabase
@@ -427,37 +485,60 @@ app.post("/api/chat/transfer", async (req, res) => {
 
         if (existingChat) {
             // Chat exists — update ownership
-            await supabase
+            const { error: chatUpdateErr } = await supabase
                 .from('chats')
                 .update({ user_id: newUserId })
                 .eq('id', chatId);
 
-            await supabase
+            if (chatUpdateErr) {
+                console.error(`[Transfer] Error updating chat ownership:`, chatUpdateErr);
+            }
+
+            const { error: msgUpdateErr } = await supabase
                 .from('messages')
                 .update({ user_id: newUserId })
                 .eq('chat_id', chatId);
 
-            console.log(`[Transfer] Updated existing chat ownership to ${newUserId}`);
-        } else if (messages && messages.length > 0) {
-            // Chat doesn't exist — create it with provided messages
-            const title = messages.find(m => m.role === 'user')?.content?.substring(0, 50) || 'Chat transferido';
+            if (msgUpdateErr) {
+                console.error(`[Transfer] Error updating message ownership:`, msgUpdateErr);
+            }
 
-            await supabase
+            console.log(`[Transfer] Updated existing chat ownership to ${newUserId}`);
+        } else if (messagesToSave && messagesToSave.length > 0) {
+            // Chat doesn't exist — create it with provided messages
+            const title = messagesToSave.find(m => m.role === 'user')?.content?.substring(0, 50) || 'Chat transferido';
+
+            const { error: chatInsertError } = await supabase
                 .from('chats')
                 .insert({ id: chatId, user_id: newUserId, title });
 
-            // Insert messages in order
-            for (const msg of messages) {
-                await supabase.rpc('save_message', {
-                    p_chat_id: chatId,
-                    p_user_id: newUserId,
-                    p_role: msg.role,
-                    p_content: msg.content,
-                    p_cards: msg.cards || null
-                });
+            if (chatInsertError) {
+                console.error(`[Transfer] Error creating chat:`, chatInsertError);
+                return res.status(500).json({ error: "Error al crear el chat", details: chatInsertError.message });
             }
 
-            console.log(`[Transfer] Created new chat with ${messages.length} messages for user ${newUserId}`);
+            // Insert messages in order using direct table insert (service key bypasses RLS)
+            // Note: save_message RPC uses auth.uid() which is null with service key
+            let savedCount = 0;
+            for (const msg of messagesToSave) {
+                const { error: insertError } = await supabase
+                    .from('messages')
+                    .insert({
+                        chat_id: chatId,
+                        user_id: newUserId,
+                        role: msg.role,
+                        content: msg.content,
+                        cards: msg.cards || null
+                    });
+
+                if (insertError) {
+                    console.error(`[Transfer] Error inserting message:`, insertError);
+                } else {
+                    savedCount++;
+                }
+            }
+
+            console.log(`[Transfer] Created new chat with ${savedCount}/${messagesToSave.length} messages for user ${newUserId}`);
         } else {
             return res.status(404).json({ error: "Chat no encontrado y no se proporcionaron mensajes" });
         }
