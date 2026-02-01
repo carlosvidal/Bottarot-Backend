@@ -491,48 +491,85 @@ app.post("/api/chat/message", chatLimiter, async (req, res) => {
                 }
             }
 
-            // Configure SSE headers
-            res.setHeader('Content-Type', 'text/event-stream');
-            res.setHeader('Cache-Control', 'no-cache');
-            res.setHeader('Connection', 'keep-alive');
-            res.flushHeaders(); // Enviar headers inmediatamente
+            // Context sufficient + memory loaded → ready for client-side card draw
+            console.log(`[${chatId}] ✅ Listo para lectura. El frontend tirará las cartas.`);
+            return res.json({
+                type: 'ready_for_reading',
+                contextSummary: contextSummary || null,
+                memoryContext: memoryContext || null,
+                futureHidden,
+                ctaMessage,
+                isAnonymous
+            });
+        }
 
-            // PASO 1: Tirar cartas INMEDIATAMENTE (sin esperar nada)
-            console.log(`[${chatId}] 🃏 Realizando nueva tirada de cartas.`);
-            const drawnCards = drawCards(3);
+        // Fallback por si la decisión no es ninguna de las esperadas
+        throw new Error(`Decisión desconocida del Agente Decisor: ${decision.type}`);
 
-            // PASO 2: Enviar cartas al cliente SIN DEMORA (con info de futuro oculto)
-            console.log(`[${chatId}] 📤 Enviando cartas al cliente INMEDIATAMENTE... (futureHidden: ${futureHidden})`);
-            res.write(`event: cards\n`);
-            res.write(`data: ${JSON.stringify({
-                cards: drawnCards,
-                futureHidden: futureHidden,
-                ctaMessage: ctaMessage,
-                isAnonymous: isAnonymous
-            })}\n\n`);
-            // Forzar flush del buffer para que el cliente reciba las cartas YA
-            if (res.flush) res.flush();
+    } catch (err) {
+        console.error(`[${chatId}] ❌ Error en el flujo del chat:`, err);
+        res.status(500).json({ error: "Ocurrió un error al procesar tu pregunta." });
+    }
+});
 
-            // PASO 3: Generar título en paralelo (no bloqueante) si es primer mensaje
-            let titlePromise = null;
-            if (!history || history.length === 0) {
-                console.log(`[${chatId}] ✍️ Generando título en background...`);
-                titlePromise = openai.chat.completions.create({
-                    model: "gpt-4o-mini",
-                    messages: [
-                        { role: "system", content: "Eres un experto en SEO. Resume la siguiente pregunta en un título corto y atractivo de 3 a 5 palabras para un historial de chat. Responde únicamente con el título." },
-                        { role: "user", content: question },
-                    ],
-                    temperature: 0.7,
-                    max_tokens: 20,
-                }).catch(err => {
-                    console.error(`[${chatId}] ❌ Error generating title:`, err);
-                    return null;
-                });
+
+// =======================================
+// INTERPRETATION ENDPOINT (Phase 2: after client-side card draw)
+// =======================================
+
+app.post("/api/chat/interpret", chatLimiter, async (req, res) => {
+    const { question, history, personalContext, drawnCards, userId, chatId, contextSummary, memoryContext } = req.body;
+
+    if (!question || !drawnCards || !chatId) {
+        return res.status(400).json({ error: "question, drawnCards y chatId son requeridos." });
+    }
+
+    const isAnonymous = !userId || userId === 'anonymous';
+
+    // Get user permissions for paywall filtering
+    let futureHidden = isAnonymous;
+    if (!isAnonymous) {
+        try {
+            const { data: permissions, error } = await supabase.rpc(
+                'get_user_reading_permissions',
+                { p_user_id: userId }
+            );
+            if (!error && permissions) {
+                futureHidden = !permissions.can_see_future && !permissions.is_premium;
             }
+        } catch (permErr) {
+            console.error(`[${chatId}] ⚠️ Error getting permissions:`, permErr);
+        }
+    }
 
-            const historyForInterpreter = history ? history.map(msg => `${msg.role === 'user' ? 'Consultante' : 'Oráculo'}: ${msg.content}`).join('\n\n') : '';
-            const interpreterPrompt = `
+    try {
+        // Configure SSE headers
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        res.flushHeaders();
+
+        // PASO 1: Generar título en paralelo (no bloqueante) si es primer mensaje
+        let titlePromise = null;
+        if (!history || history.length === 0) {
+            console.log(`[${chatId}] ✍️ Generando título en background...`);
+            titlePromise = openai.chat.completions.create({
+                model: "gpt-4o-mini",
+                messages: [
+                    { role: "system", content: "Eres un experto en SEO. Resume la siguiente pregunta en un título corto y atractivo de 3 a 5 palabras para un historial de chat. Responde únicamente con el título." },
+                    { role: "user", content: question },
+                ],
+                temperature: 0.7,
+                max_tokens: 20,
+            }).catch(err => {
+                console.error(`[${chatId}] ❌ Error generating title:`, err);
+                return null;
+            });
+        }
+
+        // PASO 2: Construir prompt del intérprete
+        const historyForInterpreter = history ? history.map(msg => `${msg.role === 'user' ? 'Consultante' : 'Oráculo'}: ${msg.content}`).join('\n\n') : '';
+        const interpreterPrompt = `
             ${personalContext || ''}
 
             ${contextSummary ? `**Contexto emocional detectado:** ${contextSummary}` : ''}
@@ -553,113 +590,108 @@ ${historyForInterpreter}
             Por favor, genera una interpretación de tarot.
             `;
 
-            // PASO 4: Generar interpretación (la parte que toma tiempo)
-            console.log(`[${chatId}] 🔮 Agente Intérprete generando...`);
-            const interpreterCompletion = await openai.chat.completions.create({
-                model: "gpt-4o-mini",
-                messages: [
-                    { role: "system", content: INTERPRETER_SYSTEM_PROMPT },
-                    { role: "user", content: interpreterPrompt },
-                ],
+        // PASO 3: Generar interpretación
+        console.log(`[${chatId}] 🔮 Agente Intérprete generando...`);
+        const interpreterCompletion = await openai.chat.completions.create({
+            model: "gpt-4o-mini",
+            messages: [
+                { role: "system", content: INTERPRETER_SYSTEM_PROMPT },
+                { role: "user", content: interpreterPrompt },
+            ],
+        });
+        const interpretation = interpreterCompletion.choices[0].message.content;
+        console.log(`[${chatId}] ✅ Interpretación generada.`);
+
+        // PASO 4: Parsear secciones y filtrar según permisos
+        const sections = parseInterpretationSections(interpretation);
+        const clientSections = filterSectionsForPaywall(sections, futureHidden);
+
+        // Cache full unfiltered content for anonymous users (used during transfer)
+        if (isAnonymous && sections._sectioned) {
+            const fullContent = JSON.stringify({
+                _version: 2,
+                sections: Object.fromEntries(
+                    ['saludo', 'pasado', 'presente', 'futuro', 'sintesis', 'consejo']
+                        .filter(k => sections[k])
+                        .map(k => [k, sections[k]])
+                ),
+                rawText: interpretation
             });
-            const interpretation = interpreterCompletion.choices[0].message.content;
-            console.log(`[${chatId}] ✅ Interpretación generada.`);
-
-            // PASO 5: Parsear secciones y filtrar según permisos
-            const sections = parseInterpretationSections(interpretation);
-            const clientSections = filterSectionsForPaywall(sections, futureHidden);
-
-            // Cache full unfiltered content for anonymous users (used during transfer)
-            if (isAnonymous && sections._sectioned) {
-                const fullContent = JSON.stringify({
-                    _version: 2,
-                    sections: Object.fromEntries(
-                        ['saludo', 'pasado', 'presente', 'futuro', 'sintesis', 'consejo']
-                            .filter(k => sections[k])
-                            .map(k => [k, sections[k]])
-                    ),
-                    rawText: interpretation
-                });
-                cacheAnonymousMessage(chatId, {
-                    role: 'user',
-                    content: question,
-                    cards: null
-                });
-                cacheAnonymousMessage(chatId, {
-                    role: 'assistant',
-                    content: fullContent,
-                    cards: drawnCards
-                });
-                console.log(`[${chatId}] 💾 Cached full interpretation for anonymous user`);
-            }
-
-            // PASO 6: Enviar secciones al cliente
-            console.log(`[${chatId}] 📤 Enviando secciones al cliente (futureHidden=${futureHidden}, sectioned=${sections._sectioned})...`);
-
-            if (sections._sectioned) {
-                const sectionOrder = ['saludo', 'pasado', 'presente', 'futuro', 'sintesis', 'consejo'];
-                for (const sectionKey of sectionOrder) {
-                    if (clientSections[sectionKey]) {
-                        res.write(`event: section\n`);
-                        res.write(`data: ${JSON.stringify({
-                            section: sectionKey,
-                            text: clientSections[sectionKey],
-                            isTeaser: sectionKey === 'futuro' && futureHidden
-                        })}\n\n`);
-                        if (res.flush) res.flush();
-                    }
-                }
-            }
-
-            // Legacy: also send full visible text as interpretation event (backward compat)
-            const visibleText = sections._sectioned
-                ? ['saludo', 'pasado', 'presente', 'futuro', 'sintesis', 'consejo']
-                    .filter(k => clientSections[k])
-                    .map(k => clientSections[k])
-                    .join('\n\n')
-                : interpretation;
-            res.write(`event: interpretation\n`);
-            res.write(`data: ${JSON.stringify({ text: visibleText })}\n\n`);
-
-            // PASO 6: Enviar título si está disponible (fue generado en paralelo)
-            if (titlePromise) {
-                try {
-                    const titleCompletion = await titlePromise;
-                    if (titleCompletion) {
-                        const generatedTitle = titleCompletion.choices[0]?.message?.content.replace(/"/g, '') || question.substring(0, 40);
-                        console.log(`[${chatId}] 📝 Título generado: "${generatedTitle}"`);
-
-                        res.write(`event: title\n`);
-                        res.write(`data: ${JSON.stringify({ title: generatedTitle })}\n\n`);
-
-                        // Opcional: Guardar en Supabase
-                        // await supabase.rpc('update_chat_title', {
-                        //     p_chat_id: chatId,
-                        //     p_user_id: userId,
-                        //     p_new_title: generatedTitle
-                        // });
-                    }
-                } catch (titleError) {
-                    console.error(`[${chatId}] ❌ Error esperando título:`, titleError);
-                }
-            }
-
-            // PASO 7: Evento DONE para cerrar el stream
-            res.write(`event: done\n`);
-            res.write(`data: ${JSON.stringify({ complete: true })}\n\n`);
-
-            // Background: Extract and save memory (fire-and-forget, does not block response)
-            extractAndSaveMemory(userId, chatId, question, interpretation);
-
-            return res.end();
+            cacheAnonymousMessage(chatId, {
+                role: 'user',
+                content: question,
+                cards: null
+            });
+            cacheAnonymousMessage(chatId, {
+                role: 'assistant',
+                content: fullContent,
+                cards: drawnCards
+            });
+            console.log(`[${chatId}] 💾 Cached full interpretation for anonymous user`);
         }
 
-        // Fallback por si la decisión no es ninguna de las esperadas
-        throw new Error(`Decisión desconocida del Agente Decisor: ${decision.type}`);
+        // PASO 5: Enviar secciones al cliente
+        console.log(`[${chatId}] 📤 Enviando secciones al cliente (futureHidden=${futureHidden}, sectioned=${sections._sectioned})...`);
+
+        if (sections._sectioned) {
+            const sectionOrder = ['saludo', 'pasado', 'presente', 'futuro', 'sintesis', 'consejo'];
+            for (const sectionKey of sectionOrder) {
+                if (clientSections[sectionKey]) {
+                    res.write(`event: section\n`);
+                    res.write(`data: ${JSON.stringify({
+                        section: sectionKey,
+                        text: clientSections[sectionKey],
+                        isTeaser: sectionKey === 'futuro' && futureHidden
+                    })}\n\n`);
+                    if (res.flush) res.flush();
+                }
+            }
+        }
+
+        // Legacy: also send full visible text as interpretation event (backward compat)
+        const visibleText = sections._sectioned
+            ? ['saludo', 'pasado', 'presente', 'futuro', 'sintesis', 'consejo']
+                .filter(k => clientSections[k])
+                .map(k => clientSections[k])
+                .join('\n\n')
+            : interpretation;
+        res.write(`event: interpretation\n`);
+        res.write(`data: ${JSON.stringify({ text: visibleText })}\n\n`);
+
+        // PASO 6: Enviar título si está disponible
+        if (titlePromise) {
+            try {
+                const titleCompletion = await titlePromise;
+                if (titleCompletion) {
+                    const generatedTitle = titleCompletion.choices[0]?.message?.content.replace(/"/g, '') || question.substring(0, 40);
+                    console.log(`[${chatId}] 📝 Título generado: "${generatedTitle}"`);
+
+                    res.write(`event: title\n`);
+                    res.write(`data: ${JSON.stringify({ title: generatedTitle })}\n\n`);
+                }
+            } catch (titleError) {
+                console.error(`[${chatId}] ❌ Error esperando título:`, titleError);
+            }
+        }
+
+        // PASO 7: Evento DONE para cerrar el stream
+        res.write(`event: done\n`);
+        res.write(`data: ${JSON.stringify({ complete: true })}\n\n`);
+
+        // Background: Extract and save memory (fire-and-forget)
+        extractAndSaveMemory(userId, chatId, question, interpretation);
+
+        return res.end();
 
     } catch (err) {
-        console.error(`[${chatId}] ❌ Error en el flujo del chat:`, err);
-        res.status(500).json({ error: "Ocurrió un error al procesar tu pregunta." });
+        console.error(`[${chatId}] ❌ Error en interpretación:`, err);
+        // If headers already sent (SSE started), send error event
+        if (res.headersSent) {
+            res.write(`event: error\n`);
+            res.write(`data: ${JSON.stringify({ error: "Error al generar la interpretación." })}\n\n`);
+            return res.end();
+        }
+        res.status(500).json({ error: "Error al generar la interpretación." });
     }
 });
 
