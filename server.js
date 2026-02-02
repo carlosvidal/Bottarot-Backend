@@ -355,29 +355,43 @@ app.post("/api/chat/message", chatLimiter, async (req, res) => {
     }
 
     try {
-        // --- 1. AGENT DECISOR ---
-        console.log(`[${chatId}] 🧐 Agente Decisor analizando: "${question.substring(0, 50)}"...`);
-
+        // --- 0. PRE-CHECKS ---
         const historyForDecider = history ? history.map(msg => `${msg.role}: ${msg.content}`).join('\n') : '';
-        const deciderPrompt = `
-        Historial de la conversación:
-        ${historyForDecider}
 
-        Pregunta actual del usuario: "${question}"
-        `;
+        // Check if user is responding to a context question — skip Decisor
+        const isContextResponse = history && history.length > 0 &&
+            history[history.length - 1]?.role === 'assistant' &&
+            history[history.length - 1]?._isContextQuestion === true;
 
-        const deciderCompletion = await openai.chat.completions.create({
-            model: "gpt-4o-mini",
-            messages: [
-                { role: "system", content: DECIDER_SYSTEM_PROMPT },
-                { role: "user", content: deciderPrompt },
-            ],
-            response_format: { type: "json_object" },
-            temperature: 0,
-        });
+        let decision;
 
-        const decision = JSON.parse(deciderCompletion.choices[0].message.content);
-        console.log(`[${chatId}] ✅ Decisión: ${decision.type}`);
+        if (isContextResponse) {
+            console.log(`[${chatId}] ↩️ Usuario respondió a pregunta contextual, saltando Decisor → requires_new_draw`);
+            decision = { type: 'requires_new_draw' };
+        } else {
+            // --- 1. AGENT DECISOR ---
+            console.log(`[${chatId}] 🧐 Agente Decisor analizando: "${question.substring(0, 50)}"...`);
+
+            const deciderPrompt = `
+            Historial de la conversación:
+            ${historyForDecider}
+
+            Pregunta actual del usuario: "${question}"
+            `;
+
+            const deciderCompletion = await openai.chat.completions.create({
+                model: "gpt-4o-mini",
+                messages: [
+                    { role: "system", content: DECIDER_SYSTEM_PROMPT },
+                    { role: "user", content: deciderPrompt },
+                ],
+                response_format: { type: "json_object" },
+                temperature: 0,
+            });
+
+            decision = JSON.parse(deciderCompletion.choices[0].message.content);
+            console.log(`[${chatId}] ✅ Decisión: ${decision.type}`);
+        }
 
         // --- 2. LOGIC BASED ON DECISION ---
 
@@ -430,11 +444,6 @@ app.post("/api/chat/message", chatLimiter, async (req, res) => {
         if (decision.type === 'requires_new_draw') {
 
             // --- CONTEXT EVALUATION PHASE ---
-            // Check if the user is responding to a previous context question
-            const isContextResponse = history && history.length > 0 &&
-                history[history.length - 1]?.role === 'assistant' &&
-                history[history.length - 1]?._isContextQuestion === true;
-
             let contextSummary = null;
 
             if (!isContextResponse) {
