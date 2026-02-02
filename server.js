@@ -635,8 +635,14 @@ ${historyForInterpreter}
 
         if (sections._sectioned) {
             const sectionOrder = ['saludo', 'pasado', 'presente', 'futuro', 'sintesis', 'consejo'];
+            let isFirstSection = true;
             for (const sectionKey of sectionOrder) {
                 if (clientSections[sectionKey]) {
+                    // Stagger sections for dramatic reveal (skip delay on first)
+                    if (!isFirstSection) {
+                        await new Promise(r => setTimeout(r, 800));
+                    }
+                    isFirstSection = false;
                     res.write(`event: section\n`);
                     res.write(`data: ${JSON.stringify({
                         section: sectionKey,
