@@ -62,14 +62,20 @@ export function corsConfig() {
  */
 export const generalLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100,
+  max: 300,
   message: 'Demasiadas solicitudes desde esta IP, por favor intenta de nuevo más tarde.',
   standardHeaders: true,
   legacyHeaders: false,
-  // Skip rate limiting for certain IPs (optional)
   skip: (req) => {
     // Skip for localhost in development
     if (process.env.NODE_ENV === 'development' && req.ip === '::1') {
+      return true;
+    }
+    // Skip rate limiting for read-only user endpoints (called frequently by auth)
+    if (req.method === 'GET' && (
+      req.path.startsWith('/api/user/subscription/') ||
+      req.path.startsWith('/api/user/reading-permissions/')
+    )) {
       return true;
     }
     return false;
