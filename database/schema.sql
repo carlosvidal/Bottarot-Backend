@@ -219,15 +219,10 @@ CREATE OR REPLACE FUNCTION save_message(
   p_content TEXT,
   p_cards JSONB DEFAULT NULL
 )
-RETURNS UUID AS $$
-DECLARE
-  new_message_id UUID;
+RETURNS VOID AS $$
 BEGIN
   INSERT INTO messages (chat_id, user_id, role, content, cards)
-  VALUES (p_chat_id, p_user_id, p_role, p_content, p_cards)
-  RETURNING id INTO new_message_id;
-
-  RETURN new_message_id;
+  VALUES (p_chat_id, p_user_id, p_role, p_content, p_cards);
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
