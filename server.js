@@ -7,8 +7,15 @@ import fetch from "node-fetch";
 import { OpenAI } from "openai";
 import { createClient } from "@supabase/supabase-js";
 import { nanoid } from "nanoid";
+import sharp from "sharp";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 import { tarotDeck } from "./data/tarotDeck.js";
 import { parseInterpretationSections, filterSectionsForPaywall } from "./utils/sectionParser.js";
+import { generateSharePreview, uploadToStorage } from "./utils/imageGenerator.js";
 import paypalClient from "./paypal-config.js";
 import pkg from "@paypal/paypal-server-sdk";
 const { OrdersController } = pkg;
@@ -1682,7 +1689,19 @@ app.post("/api/chat/:chatId/share", async (req, res) => {
     // 7. Generate unique share_id
     const shareId = nanoid(10);
 
-    // 8. Create share record
+    // 8. Generate preview image (async, don't block response)
+    let previewImageUrl = null;
+    try {
+      const frontendUrl = process.env.FRONTEND_URL || 'https://freetarot.fun';
+      const imageBuffer = await generateSharePreview(readingMsg.cards, frontendUrl);
+      previewImageUrl = await uploadToStorage(supabase, imageBuffer, shareId);
+      console.log(`[Share] Generated preview image: ${previewImageUrl}`);
+    } catch (imgError) {
+      console.error(`[Share] Error generating preview image (continuing without):`, imgError);
+      // Continue without image - not critical
+    }
+
+    // 9. Create share record
     const { data: shareResult, error: insertError } = await supabase.rpc('create_share', {
       p_share_id: shareId,
       p_chat_id: chatId,
@@ -1691,7 +1710,7 @@ app.post("/api/chat/:chatId/share", async (req, res) => {
       p_question: userQuestion,
       p_cards: readingMsg.cards,
       p_interpretation_summary: interpretationSummary,
-      p_preview_image_url: null  // TODO: Generate preview image
+      p_preview_image_url: previewImageUrl
     });
 
     if (insertError) {
@@ -1704,7 +1723,7 @@ app.post("/api/chat/:chatId/share", async (req, res) => {
     res.json({
       shareId,
       shareUrl: `${process.env.SHARE_URL || 'https://share.freetarot.fun'}/${shareId}`,
-      previewImageUrl: null
+      previewImageUrl
     });
 
   } catch (error) {
