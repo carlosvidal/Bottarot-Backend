@@ -1799,6 +1799,36 @@ app.get("/api/shared/:shareId", async (req, res) => {
   }
 });
 
+// Check if a chat has a public share (for redirecting SPA URLs)
+app.get("/api/chat/:chatId/public-share", async (req, res) => {
+  const { chatId } = req.params;
+
+  if (!chatId) {
+    return res.status(400).json({ error: "chatId es requerido" });
+  }
+
+  try {
+    // Check if there's a share for this chat
+    const { data: existingShare } = await supabase.rpc('get_existing_share', {
+      p_chat_id: chatId
+    });
+
+    if (existingShare && existingShare.length > 0) {
+      const share = existingShare[0];
+      return res.json({
+        hasShare: true,
+        shareUrl: `${process.env.SHARE_URL || 'https://share.freetarot.fun'}/${share.share_id}`
+      });
+    }
+
+    res.json({ hasShare: false });
+
+  } catch (error) {
+    console.error('[Share] Error checking public share:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
 // =======================================
 // HEALTH CHECK & ERROR HANDLING
 // =======================================
