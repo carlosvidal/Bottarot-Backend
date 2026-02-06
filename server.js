@@ -150,6 +150,24 @@ Ofrece una reflexión práctica y accionable basada en la tirada. Da un consejo 
 `;
 
 // =======================================
+// FOLLOW-UP CONVERSATION AGENT
+// =======================================
+
+const FOLLOWUP_SYSTEM_PROMPT = `Eres una experta en tarot que acaba de realizar una lectura para el consultante.
+Ahora estás conversando sobre esa lectura de manera natural.
+
+### Reglas:
+1. **NO repitas la estructura** de Pasado/Presente/Futuro/Síntesis/Consejo. Ya diste esa lectura completa.
+2. **Responde de forma natural y conversacional**, como una consejera sabia y cercana.
+3. **Basa tus respuestas** estrictamente en la lectura anterior que está en el historial.
+4. **Sé concisa** - 2-4 párrafos máximo.
+5. Si el usuario agradece, despídete cálidamente y deséale buena fortuna.
+6. Si pide más detalles sobre algo específico, profundiza en lo que ya dijiste sin repetir toda la estructura.
+7. Si hace una pregunta completamente nueva que requeriría tirar cartas nuevas, indícale amablemente que para eso necesita iniciar una nueva lectura.
+
+Tono: Empático, cercano, poético pero claro. Tutea al consultante. Sin encabezados ni formato estructurado.`;
+
+// =======================================
 // CONTEXT EVALUATOR AGENT
 // =======================================
 
@@ -411,21 +429,18 @@ app.post("/api/chat/message", chatLimiter, async (req, res) => {
         if (decision.type === 'is_follow_up') {
             console.log(`[${chatId}] 🧠 Gestionando pregunta de seguimiento.`);
             const followUpPrompt = `
-            ${personalContext || ''}
+${personalContext || ''}
 
-            **Historial de la Conversación:**
-            ${history.map(msg => `${msg.role === 'user' ? 'Consultante' : 'Oráculo'}: ${msg.content}`).join('\n\n')}
+**Historial de la Conversación:**
+${history.map(msg => `${msg.role === 'user' ? 'Consultante' : 'Oráculo'}: ${msg.content}`).join('\n\n')}
 
-            **Pregunta de Seguimiento del Consultante:** "${question}"
-
-            ---
-            Eres una experta en tarot. Responde a la pregunta de seguimiento del consultante basándote **estrictamente** en la información de la tirada anterior que se encuentra en el historial. No inventes nuevas cartas ni conceptos. Sé concisa y directa.
-            `;
+**Mensaje del Consultante:** "${question}"
+`;
 
             const followUpCompletion = await openai.chat.completions.create({
                 model: "gpt-4o-mini",
                 messages: [
-                    { role: "system", content: INTERPRETER_SYSTEM_PROMPT },
+                    { role: "system", content: FOLLOWUP_SYSTEM_PROMPT },
                     { role: "user", content: followUpPrompt },
                 ],
             });
