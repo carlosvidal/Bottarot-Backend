@@ -10,7 +10,6 @@ const __dirname = path.dirname(__filename);
 const ASSETS_DIR = path.join(__dirname, '..', 'assets');
 const BACKGROUNDS_DIR = path.join(ASSETS_DIR, 'backgrounds');
 const CARDS_DIR = path.join(ASSETS_DIR, 'cards');
-const LOGO_PATH = path.join(ASSETS_DIR, 'logo.png'); // PNG logo for better quality
 
 // OG Image dimensions
 const OG_WIDTH = 1200;
@@ -198,44 +197,8 @@ export async function generateSharePreview(cards, frontendUrl = 'https://freetar
       });
     });
 
-    // 4. Add logo in bottom-right corner
-    if (fs.existsSync(LOGO_PATH)) {
-      try {
-        const logo = await sharp(LOGO_PATH)
-          .resize(150, 45, { fit: 'inside' })
-          .toBuffer();
-
-        composites.push({
-          input: logo,
-          top: OG_HEIGHT - 55,
-          left: OG_WIDTH - 165
-        });
-        console.log('[ImageGen] Added logo from PNG');
-      } catch (logoErr) {
-        console.warn('[ImageGen] Could not add logo:', logoErr.message);
-      }
-    } else {
-      // Try SVG fallback
-      const svgPath = path.join(ASSETS_DIR, 'watermark.svg');
-      if (fs.existsSync(svgPath)) {
-        try {
-          const logo = await sharp(svgPath)
-            .resize(150, 45, { fit: 'inside' })
-            .toBuffer();
-
-          composites.push({
-            input: logo,
-            top: OG_HEIGHT - 55,
-            left: OG_WIDTH - 165
-          });
-          console.log('[ImageGen] Added logo from SVG fallback');
-        } catch (svgErr) {
-          console.warn('[ImageGen] Could not add SVG logo:', svgErr.message);
-        }
-      }
-    }
-
-    // 5. Generate final image as JPG (smaller file size)
+    // 4. Generate final image as JPG (smaller file size)
+    // Note: Logo is already included in the background images
     const finalImage = await sharp(background)
       .composite(composites)
       .jpeg({ quality: 85 })
