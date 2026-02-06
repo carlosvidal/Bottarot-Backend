@@ -1148,6 +1148,23 @@ app.post("/api/user/record-reading", async (req, res) => {
     }
 
     console.log(`[Reading] Recording result:`, data);
+
+    // Check if this is the user's first reading and complete referral if pending
+    if (data?.total_readings === 1) {
+      console.log(`[Referral] First reading for user ${userId}, checking for pending referral...`);
+      try {
+        const { data: referralResult } = await supabase.rpc('complete_referral_reward', {
+          p_referred_id: userId
+        });
+        if (referralResult?.success) {
+          console.log(`[Referral] Reward granted to referrer: ${referralResult.reward_type} = ${referralResult.reward_amount}`);
+        }
+      } catch (refError) {
+        // Don't block the reading response if referral fails
+        console.error('[Referral] Auto-complete failed (non-blocking):', refError.message);
+      }
+    }
+
     res.json(data);
   } catch (err) {
     console.error("Error recording reading:", err);
@@ -1826,6 +1843,149 @@ app.get("/api/chat/:chatId/public-share", async (req, res) => {
   } catch (error) {
     console.error('[Share] Error checking public share:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// =======================================
+// REFERRAL ENDPOINTS
+// =======================================
+
+// GET /api/referral/code - Get or create user's referral code
+app.get("/api/referral/code", async (req, res) => {
+  const userId = req.headers['x-user-id'];
+  if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+  try {
+    // Try to get existing code
+    let { data: existing } = await supabase
+      .from('referral_codes')
+      .select('code')
+      .eq('user_id', userId)
+      .single();
+
+    if (existing) {
+      return res.json({ code: existing.code });
+    }
+
+    // Create new code using nanoid
+    const code = nanoid(10).toUpperCase();
+    const { data, error } = await supabase
+      .from('referral_codes')
+      .insert({ user_id: userId, code })
+      .select('code')
+      .single();
+
+    if (error) {
+      console.error('[Referral] Insert error:', error);
+      // If there was a conflict, try to fetch the existing one
+      const { data: existingAfterConflict } = await supabase
+        .from('referral_codes')
+        .select('code')
+        .eq('user_id', userId)
+        .single();
+
+      if (existingAfterConflict) {
+        return res.json({ code: existingAfterConflict.code });
+      }
+      throw error;
+    }
+
+    console.log(`[Referral] Created code ${data.code} for user ${userId}`);
+    res.json({ code: data.code });
+
+  } catch (error) {
+    console.error('[Referral] Get code error:', error);
+    res.status(500).json({ error: 'Failed to get referral code' });
+  }
+});
+
+// GET /api/referral/stats - Get user's referral statistics
+app.get("/api/referral/stats", async (req, res) => {
+  const userId = req.headers['x-user-id'];
+  if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+  try {
+    const { data, error } = await supabase.rpc('get_referral_stats', {
+      p_user_id: userId
+    });
+
+    if (error) throw error;
+    res.json(data);
+
+  } catch (error) {
+    console.error('[Referral] Stats error:', error);
+    res.status(500).json({ error: 'Failed to get referral stats' });
+  }
+});
+
+// POST /api/referral/register - Register a referral (called on signup)
+app.post("/api/referral/register", async (req, res) => {
+  const { userId, referralCode } = req.body;
+
+  if (!userId || !referralCode) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('register_referral', {
+      p_referred_id: userId,
+      p_referral_code: referralCode
+    });
+
+    if (error) throw error;
+
+    console.log(`[Referral] Registered referral: user ${userId} with code ${referralCode}, success: ${data}`);
+    res.json({ success: data });
+
+  } catch (error) {
+    console.error('[Referral] Register error:', error);
+    res.status(500).json({ error: 'Failed to register referral' });
+  }
+});
+
+// POST /api/referral/complete - Complete referral and grant reward
+app.post("/api/referral/complete", async (req, res) => {
+  const { userId } = req.body;
+
+  if (!userId) {
+    return res.status(400).json({ error: 'Missing userId' });
+  }
+
+  try {
+    const { data, error } = await supabase.rpc('complete_referral_reward', {
+      p_referred_id: userId
+    });
+
+    if (error) throw error;
+
+    console.log('[Referral] Completed:', data);
+    res.json(data);
+
+  } catch (error) {
+    console.error('[Referral] Complete error:', error);
+    res.status(500).json({ error: 'Failed to complete referral' });
+  }
+});
+
+// GET /api/referral/list - Get list of user's referrals
+app.get("/api/referral/list", async (req, res) => {
+  const userId = req.headers['x-user-id'];
+  if (!userId) return res.status(401).json({ error: 'Unauthorized' });
+
+  try {
+    const { data, error } = await supabase
+      .from('referrals')
+      .select('id, status, reward_type, reward_amount, created_at, completed_at')
+      .eq('referrer_id', userId)
+      .order('created_at', { ascending: false })
+      .limit(50);
+
+    if (error) throw error;
+    res.json({ referrals: data });
+
+  } catch (error) {
+    console.error('[Referral] List error:', error);
+    res.status(500).json({ error: 'Failed to get referrals' });
   }
 });
 
