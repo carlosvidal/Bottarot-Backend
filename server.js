@@ -6,6 +6,7 @@ import cors from "cors";
 import fetch from "node-fetch";
 import { OpenAI } from "openai";
 import { createClient } from "@supabase/supabase-js";
+import { nanoid } from "nanoid";
 import { tarotDeck } from "./data/tarotDeck.js";
 import { parseInterpretationSections, filterSectionsForPaywall } from "./utils/sectionParser.js";
 import paypalClient from "./paypal-config.js";
@@ -1597,6 +1598,183 @@ app.delete("/api/admin/pending-transactions", adminAuth, async (req, res) => {
   } catch (err) {
     console.error("Admin error:", err);
     res.status(500).json({ error: "Error deleting pending transactions" });
+  }
+});
+
+// =======================================
+// SHARE ENDPOINTS
+// =======================================
+
+// Create a share link for a chat
+app.post("/api/chat/:chatId/share", async (req, res) => {
+  const { chatId } = req.params;
+  const { userId } = req.body;
+
+  if (!chatId || !userId) {
+    return res.status(400).json({ error: "chatId y userId son requeridos" });
+  }
+
+  try {
+    console.log(`[Share] Creating share for chat ${chatId} by user ${userId}`);
+
+    // 1. Verify ownership of the chat
+    const { data: chat, error: chatError } = await supabase
+      .from('chats')
+      .select('id, title, user_id')
+      .eq('id', chatId)
+      .eq('user_id', userId)
+      .single();
+
+    if (chatError || !chat) {
+      console.error(`[Share] Chat not found or unauthorized:`, chatError);
+      return res.status(404).json({ error: 'Chat no encontrado o no autorizado' });
+    }
+
+    // 2. Check if share already exists for this chat
+    const { data: existingShare } = await supabase.rpc('get_existing_share', {
+      p_chat_id: chatId
+    });
+
+    if (existingShare && existingShare.length > 0) {
+      const share = existingShare[0];
+      console.log(`[Share] Found existing share: ${share.share_id}`);
+      return res.json({
+        shareId: share.share_id,
+        shareUrl: `${process.env.SHARE_URL || 'https://share.freetarot.fun'}/${share.share_id}`,
+        previewImageUrl: share.preview_image_url,
+        alreadyShared: true
+      });
+    }
+
+    // 3. Get chat history
+    const { data: messages, error: msgError } = await supabase.rpc('get_chat_history', {
+      p_chat_id: chatId
+    });
+
+    if (msgError) {
+      console.error(`[Share] Error fetching chat history:`, msgError);
+      return res.status(500).json({ error: 'Error obteniendo historial del chat' });
+    }
+
+    // 4. Find the reading message with cards
+    const readingMsg = messages?.find(m => m.cards && m.cards.length > 0);
+    if (!readingMsg) {
+      return res.status(400).json({ error: 'No se encontró una lectura de tarot en este chat' });
+    }
+
+    // 5. Extract synthesis for OG description
+    let interpretationSummary = '';
+    try {
+      const content = JSON.parse(readingMsg.content);
+      if (content._version === 2 && content.sections?.sintesis) {
+        interpretationSummary = content.sections.sintesis.substring(0, 200);
+      } else if (content.sections?.sintesis?.text) {
+        interpretationSummary = content.sections.sintesis.text.substring(0, 200);
+      }
+    } catch (e) {
+      // Plain text content - extract first 200 chars
+      interpretationSummary = readingMsg.content?.substring(0, 200) || '';
+    }
+
+    // 6. Get user's original question
+    const userQuestion = messages?.find(m => m.role === 'user')?.content || '';
+
+    // 7. Generate unique share_id
+    const shareId = nanoid(10);
+
+    // 8. Create share record
+    const { data: shareResult, error: insertError } = await supabase.rpc('create_share', {
+      p_share_id: shareId,
+      p_chat_id: chatId,
+      p_user_id: userId,
+      p_title: chat.title || 'Lectura de Tarot',
+      p_question: userQuestion,
+      p_cards: readingMsg.cards,
+      p_interpretation_summary: interpretationSummary,
+      p_preview_image_url: null  // TODO: Generate preview image
+    });
+
+    if (insertError) {
+      console.error(`[Share] Error creating share:`, insertError);
+      return res.status(500).json({ error: 'Error al crear el enlace compartido' });
+    }
+
+    console.log(`[Share] Created share: ${shareId} for chat ${chatId}`);
+
+    res.json({
+      shareId,
+      shareUrl: `${process.env.SHARE_URL || 'https://share.freetarot.fun'}/${shareId}`,
+      previewImageUrl: null
+    });
+
+  } catch (error) {
+    console.error('[Share] Error:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// Get shared reading data (public endpoint)
+app.get("/api/shared/:shareId", async (req, res) => {
+  const { shareId } = req.params;
+
+  if (!shareId) {
+    return res.status(400).json({ error: "shareId es requerido" });
+  }
+
+  try {
+    console.log(`[Share] Fetching shared reading: ${shareId}`);
+
+    const { data, error } = await supabase.rpc('get_shared_reading', {
+      p_share_id: shareId
+    });
+
+    if (error) {
+      console.error(`[Share] Error fetching share:`, error);
+      return res.status(500).json({ error: 'Error obteniendo lectura compartida' });
+    }
+
+    if (!data) {
+      return res.status(404).json({ error: 'Lectura compartida no encontrada o expirada' });
+    }
+
+    console.log(`[Share] Found share: ${shareId}, views: ${data.share?.view_count || 0}`);
+
+    // Transform messages to include parsed sections for display
+    const readings = [];
+    if (data.messages) {
+      for (const msg of data.messages) {
+        if (msg.role === 'assistant' && msg.cards) {
+          // This is a reading message
+          let sections = null;
+          try {
+            const parsed = JSON.parse(msg.content);
+            if (parsed._version === 2 && parsed.sections) {
+              sections = parsed.sections;
+            }
+          } catch (e) {
+            // Plain text - use raw content
+          }
+
+          readings.push({
+            id: msg.id,
+            cards: msg.cards,
+            sections: sections,
+            rawContent: sections ? null : msg.content,
+            createdAt: msg.created_at
+          });
+        }
+      }
+    }
+
+    res.json({
+      share: data.share,
+      readings,
+      question: data.share?.question
+    });
+
+  } catch (error) {
+    console.error('[Share] Error:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
 

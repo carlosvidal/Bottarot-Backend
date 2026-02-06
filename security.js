@@ -37,7 +37,9 @@ export function corsConfig() {
   const allowedOrigins = [
     process.env.FRONTEND_URL || 'http://localhost:5173',
     'https://freetarot.fun',
-    'https://www.freetarot.fun'
+    'https://www.freetarot.fun',
+    'https://share.freetarot.fun',
+    'http://localhost:4000'  // Astro dev server
   ];
 
   return {
