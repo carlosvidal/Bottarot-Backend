@@ -1735,11 +1735,24 @@ app.post("/api/chat/:chatId/share", async (req, res) => {
     const shareUrl = `${process.env.SHARE_URL || 'https://share.freetarot.fun'}/${shareId}`;
     console.log(`[Share] Created share: ${shareId} for chat ${chatId}`);
 
-    // 9. Send response immediately (don't wait for image)
+    // 9. Auto-close the chat when shared
+    try {
+      await supabase.rpc('close_chat', {
+        p_chat_id: chatId,
+        p_user_id: userId
+      });
+      console.log(`[Share] Chat ${chatId} auto-closed after sharing`);
+    } catch (closeErr) {
+      console.error(`[Share] Warning: Failed to auto-close chat:`, closeErr);
+      // Don't fail the share operation if close fails
+    }
+
+    // 10. Send response immediately (don't wait for image)
     res.json({
       shareId,
       shareUrl,
-      previewImageUrl: null // Image generating in background
+      previewImageUrl: null, // Image generating in background
+      chatClosed: true // Inform frontend that chat is now closed
     });
 
     // 10. Generate preview image in BACKGROUND (after response sent)
@@ -1762,6 +1775,41 @@ app.post("/api/chat/:chatId/share", async (req, res) => {
 
   } catch (error) {
     console.error('[Share] Error:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// Close/finalize a chat (prevent further messages)
+app.post("/api/chat/:chatId/close", async (req, res) => {
+  const { chatId } = req.params;
+  const { userId } = req.body;
+
+  if (!chatId || !userId) {
+    return res.status(400).json({ error: "chatId y userId son requeridos" });
+  }
+
+  try {
+    console.log(`[Close] Closing chat ${chatId} for user ${userId}`);
+
+    const { data, error } = await supabase.rpc('close_chat', {
+      p_chat_id: chatId,
+      p_user_id: userId
+    });
+
+    if (error) {
+      console.error(`[Close] Error closing chat:`, error);
+      return res.status(500).json({ error: 'Error al cerrar el chat' });
+    }
+
+    if (!data) {
+      return res.status(404).json({ error: 'Chat no encontrado o no autorizado' });
+    }
+
+    console.log(`[Close] Chat ${chatId} closed successfully`);
+    res.json({ success: true, closed: true });
+
+  } catch (error) {
+    console.error('[Close] Error:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
