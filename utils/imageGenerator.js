@@ -10,16 +10,19 @@ const __dirname = path.dirname(__filename);
 const ASSETS_DIR = path.join(__dirname, '..', 'assets');
 const BACKGROUNDS_DIR = path.join(ASSETS_DIR, 'backgrounds');
 const CARDS_DIR = path.join(ASSETS_DIR, 'cards');
-const WATERMARK_PATH = path.join(ASSETS_DIR, 'watermark.svg');
+const LOGO_PATH = path.join(ASSETS_DIR, 'logo.png'); // PNG logo for better quality
 
 // OG Image dimensions
 const OG_WIDTH = 1200;
 const OG_HEIGHT = 630;
 
-// Card dimensions in the composite
-const CARD_WIDTH = 180;
-const CARD_HEIGHT = 310;
-const CARD_GAP = 40;
+// Card dimensions - 10% smaller than before
+const CARD_WIDTH = 162;  // was 180
+const CARD_HEIGHT = 279; // was 310
+const CARD_GAP = 50;     // slightly more gap for rotated cards
+
+// Rotation angles for natural look (in degrees)
+const CARD_ROTATIONS = [-5, 0, 4]; // left card tilts left, middle straight, right tilts right
 
 /**
  * Get a random background image path
@@ -59,7 +62,7 @@ function getCardImagePath(card) {
  * Generate an OG preview image with 3 tarot cards
  * @param {Array} cards - Array of card objects with image property
  * @param {string} frontendUrl - Base URL of frontend (fallback, not used with local)
- * @returns {Promise<Buffer>} - PNG image buffer
+ * @returns {Promise<Buffer>} - JPG image buffer
  */
 export async function generateSharePreview(cards, frontendUrl = 'https://freetarot.fun') {
   const startTime = Date.now();
@@ -68,7 +71,7 @@ export async function generateSharePreview(cards, frontendUrl = 'https://freetar
     // Calculate positions for 3 cards centered
     const totalWidth = (CARD_WIDTH * 3) + (CARD_GAP * 2);
     const startX = Math.floor((OG_WIDTH - totalWidth) / 2);
-    const cardY = Math.floor((OG_HEIGHT - CARD_HEIGHT) / 2) - 20; // Slight offset for label space
+    const cardY = Math.floor((OG_HEIGHT - CARD_HEIGHT) / 2);
 
     // 1. Load background image
     let background;
@@ -86,13 +89,13 @@ export async function generateSharePreview(cards, frontendUrl = 'https://freetar
         create: {
           width: OG_WIDTH,
           height: OG_HEIGHT,
-          channels: 4,
-          background: { r: 10, g: 10, b: 26, alpha: 1 }
+          channels: 3,
+          background: { r: 10, g: 10, b: 26 }
         }
-      }).png().toBuffer();
+      }).jpeg().toBuffer();
     }
 
-    // 2. Process card images (local files - much faster!)
+    // 2. Process card images with rotation
     const cardBuffers = await Promise.all(
       cards.slice(0, 3).map(async (card, index) => {
         try {
@@ -103,53 +106,71 @@ export async function generateSharePreview(cards, frontendUrl = 'https://freetar
             return null;
           }
 
-          console.log(`[ImageGen] Processing card: ${card.name} (${card.upright ? 'upright' : 'inverted'})`);
+          const rotation = CARD_ROTATIONS[index] || 0;
+          console.log(`[ImageGen] Processing card: ${card.name} (${card.upright ? 'upright' : 'inverted'}, rotation: ${rotation}°)`);
 
           // Load and resize card
           let cardImage = sharp(cardPath)
             .resize(CARD_WIDTH, CARD_HEIGHT, { fit: 'cover' });
 
-          // Rotate if inverted
+          // Apply 180° rotation if inverted (before stylistic rotation)
           if (!card.upright) {
             cardImage = cardImage.rotate(180);
           }
 
-          // Add rounded corners and border
+          // Add rounded corners
           const roundedCornersSvg = `
             <svg width="${CARD_WIDTH}" height="${CARD_HEIGHT}">
               <rect x="0" y="0" width="${CARD_WIDTH}" height="${CARD_HEIGHT}"
-                    rx="10" ry="10" fill="white"/>
+                    rx="8" ry="8" fill="white"/>
             </svg>
           `;
 
-          const cardBuffer = await cardImage
+          let cardBuffer = await cardImage
             .composite([{
               input: Buffer.from(roundedCornersSvg),
               blend: 'dest-in'
             }])
+            .png() // Need PNG for transparency during rotation
             .toBuffer();
 
-          // Add subtle border/shadow effect
+          // Add gold border effect
+          const borderWidth = CARD_WIDTH + 6;
+          const borderHeight = CARD_HEIGHT + 6;
           const borderSvg = `
-            <svg width="${CARD_WIDTH + 4}" height="${CARD_HEIGHT + 4}">
-              <rect x="0" y="0" width="${CARD_WIDTH + 4}" height="${CARD_HEIGHT + 4}"
-                    rx="12" ry="12" fill="rgba(212,175,55,0.5)"/>
+            <svg width="${borderWidth}" height="${borderHeight}">
+              <rect x="0" y="0" width="${borderWidth}" height="${borderHeight}"
+                    rx="10" ry="10" fill="rgba(212,175,55,0.6)"/>
             </svg>
           `;
 
-          const cardWithBorder = await sharp(Buffer.from(borderSvg))
+          cardBuffer = await sharp(Buffer.from(borderSvg))
             .composite([{
               input: cardBuffer,
-              top: 2,
-              left: 2
+              top: 3,
+              left: 3
             }])
             .png()
             .toBuffer();
 
+          // Apply stylistic rotation if needed
+          if (rotation !== 0) {
+            cardBuffer = await sharp(cardBuffer)
+              .rotate(rotation, { background: { r: 0, g: 0, b: 0, alpha: 0 } })
+              .png()
+              .toBuffer();
+          }
+
+          // Get dimensions after rotation
+          const meta = await sharp(cardBuffer).metadata();
+
           return {
-            buffer: cardWithBorder,
-            x: startX + (index * (CARD_WIDTH + CARD_GAP)) - 2,
-            y: cardY - 2
+            buffer: cardBuffer,
+            width: meta.width,
+            height: meta.height,
+            // Center each card at its position
+            x: startX + (index * (CARD_WIDTH + CARD_GAP)) + Math.floor(CARD_WIDTH / 2) - Math.floor(meta.width / 2),
+            y: cardY + Math.floor(CARD_HEIGHT / 2) - Math.floor(meta.height / 2)
           };
         } catch (err) {
           console.error(`[ImageGen] Error processing card ${index}:`, err);
@@ -172,54 +193,52 @@ export async function generateSharePreview(cards, frontendUrl = 'https://freetar
     validCards.forEach(card => {
       composites.push({
         input: card.buffer,
-        top: card.y,
-        left: card.x
+        top: Math.max(0, card.y),
+        left: Math.max(0, card.x)
       });
     });
 
-    // 4. Add position labels
-    const positions = ['Pasado', 'Presente', 'Futuro'];
-    for (let i = 0; i < validCards.length; i++) {
-      const labelSvg = `
-        <svg width="${CARD_WIDTH}" height="35">
-          <text x="${CARD_WIDTH/2}" y="25"
-            font-family="Georgia, serif"
-            font-size="16"
-            fill="#d4af37"
-            text-anchor="middle"
-            font-weight="bold"
-            letter-spacing="2"
-          >${positions[i] || ''}</text>
-        </svg>
-      `;
-      composites.push({
-        input: Buffer.from(labelSvg),
-        top: validCards[i].y + CARD_HEIGHT + 15,
-        left: validCards[i].x + 2
-      });
-    }
-
-    // 5. Add watermark/logo
-    if (fs.existsSync(WATERMARK_PATH)) {
+    // 4. Add logo in bottom-right corner
+    if (fs.existsSync(LOGO_PATH)) {
       try {
-        const watermark = await sharp(WATERMARK_PATH)
-          .resize(200, 50, { fit: 'inside' })
+        const logo = await sharp(LOGO_PATH)
+          .resize(150, 45, { fit: 'inside' })
           .toBuffer();
 
         composites.push({
-          input: watermark,
-          top: OG_HEIGHT - 70,
-          left: Math.floor((OG_WIDTH - 200) / 2)
+          input: logo,
+          top: OG_HEIGHT - 55,
+          left: OG_WIDTH - 165
         });
-      } catch (wmErr) {
-        console.warn('[ImageGen] Could not add watermark:', wmErr.message);
+        console.log('[ImageGen] Added logo from PNG');
+      } catch (logoErr) {
+        console.warn('[ImageGen] Could not add logo:', logoErr.message);
+      }
+    } else {
+      // Try SVG fallback
+      const svgPath = path.join(ASSETS_DIR, 'watermark.svg');
+      if (fs.existsSync(svgPath)) {
+        try {
+          const logo = await sharp(svgPath)
+            .resize(150, 45, { fit: 'inside' })
+            .toBuffer();
+
+          composites.push({
+            input: logo,
+            top: OG_HEIGHT - 55,
+            left: OG_WIDTH - 165
+          });
+          console.log('[ImageGen] Added logo from SVG fallback');
+        } catch (svgErr) {
+          console.warn('[ImageGen] Could not add SVG logo:', svgErr.message);
+        }
       }
     }
 
-    // 6. Generate final image
+    // 5. Generate final image as JPG (smaller file size)
     const finalImage = await sharp(background)
       .composite(composites)
-      .png({ quality: 85, compressionLevel: 6 })
+      .jpeg({ quality: 85 })
       .toBuffer();
 
     const elapsed = Date.now() - startTime;
@@ -241,14 +260,14 @@ export async function generateSharePreview(cards, frontendUrl = 'https://freetar
  * @returns {Promise<string>} - Public URL of uploaded image
  */
 export async function uploadToStorage(supabase, imageBuffer, shareId) {
-  const fileName = `${shareId}.png`;
+  const fileName = `${shareId}.jpg`;
   const bucket = 'share-previews';
 
   try {
     const { data, error } = await supabase.storage
       .from(bucket)
       .upload(fileName, imageBuffer, {
-        contentType: 'image/png',
+        contentType: 'image/jpeg',
         upsert: true
       });
 
