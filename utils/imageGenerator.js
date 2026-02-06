@@ -1,5 +1,16 @@
 import sharp from 'sharp';
-import fetch from 'node-fetch';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Paths to assets
+const ASSETS_DIR = path.join(__dirname, '..', 'assets');
+const BACKGROUNDS_DIR = path.join(ASSETS_DIR, 'backgrounds');
+const CARDS_DIR = path.join(ASSETS_DIR, 'cards');
+const WATERMARK_PATH = path.join(ASSETS_DIR, 'watermark.svg');
 
 // OG Image dimensions
 const OG_WIDTH = 1200;
@@ -10,59 +21,135 @@ const CARD_WIDTH = 180;
 const CARD_HEIGHT = 310;
 const CARD_GAP = 40;
 
-// Background color (dark mystical)
-const BG_COLOR = { r: 10, g: 10, b: 26, alpha: 1 };
+/**
+ * Get a random background image path
+ */
+function getRandomBackground() {
+  try {
+    const files = fs.readdirSync(BACKGROUNDS_DIR).filter(f =>
+      f.endsWith('.jpg') || f.endsWith('.png') || f.endsWith('.webp')
+    );
+    if (files.length === 0) return null;
+    const randomIndex = Math.floor(Math.random() * files.length);
+    return path.join(BACKGROUNDS_DIR, files[randomIndex]);
+  } catch (err) {
+    console.error('[ImageGen] Error reading backgrounds:', err);
+    return null;
+  }
+}
+
+/**
+ * Get local card image path from card data
+ */
+function getCardImagePath(card) {
+  // card.image is like "/img/Trumps-00.webp"
+  // We need to extract "Trumps-00.webp" and look in CARDS_DIR
+  const imageName = card.image.split('/').pop();
+  const localPath = path.join(CARDS_DIR, imageName);
+
+  if (fs.existsSync(localPath)) {
+    return localPath;
+  }
+
+  console.warn(`[ImageGen] Card not found locally: ${imageName}`);
+  return null;
+}
 
 /**
  * Generate an OG preview image with 3 tarot cards
  * @param {Array} cards - Array of card objects with image property
- * @param {string} frontendUrl - Base URL of frontend for fetching images
+ * @param {string} frontendUrl - Base URL of frontend (fallback, not used with local)
  * @returns {Promise<Buffer>} - PNG image buffer
  */
 export async function generateSharePreview(cards, frontendUrl = 'https://freetarot.fun') {
+  const startTime = Date.now();
+
   try {
     // Calculate positions for 3 cards centered
     const totalWidth = (CARD_WIDTH * 3) + (CARD_GAP * 2);
     const startX = Math.floor((OG_WIDTH - totalWidth) / 2);
-    const cardY = Math.floor((OG_HEIGHT - CARD_HEIGHT) / 2);
+    const cardY = Math.floor((OG_HEIGHT - CARD_HEIGHT) / 2) - 20; // Slight offset for label space
 
-    // Fetch and process card images
+    // 1. Load background image
+    let background;
+    const bgPath = getRandomBackground();
+
+    if (bgPath && fs.existsSync(bgPath)) {
+      console.log(`[ImageGen] Using background: ${path.basename(bgPath)}`);
+      background = await sharp(bgPath)
+        .resize(OG_WIDTH, OG_HEIGHT, { fit: 'cover' })
+        .toBuffer();
+    } else {
+      // Fallback: create solid dark background
+      console.log('[ImageGen] Using fallback solid background');
+      background = await sharp({
+        create: {
+          width: OG_WIDTH,
+          height: OG_HEIGHT,
+          channels: 4,
+          background: { r: 10, g: 10, b: 26, alpha: 1 }
+        }
+      }).png().toBuffer();
+    }
+
+    // 2. Process card images (local files - much faster!)
     const cardBuffers = await Promise.all(
       cards.slice(0, 3).map(async (card, index) => {
         try {
-          const imageUrl = `${frontendUrl}${card.image}`;
-          console.log(`[ImageGen] Fetching card image: ${imageUrl}`);
+          const cardPath = getCardImagePath(card);
 
-          const response = await fetch(imageUrl);
-          if (!response.ok) {
-            console.error(`[ImageGen] Failed to fetch ${imageUrl}: ${response.status}`);
+          if (!cardPath) {
+            console.error(`[ImageGen] Card image not found for: ${card.name}`);
             return null;
           }
 
-          const buffer = await response.buffer();
+          console.log(`[ImageGen] Processing card: ${card.name} (${card.upright ? 'upright' : 'inverted'})`);
 
-          // Resize card and rotate if inverted
-          let cardImage = sharp(buffer)
+          // Load and resize card
+          let cardImage = sharp(cardPath)
             .resize(CARD_WIDTH, CARD_HEIGHT, { fit: 'cover' });
 
+          // Rotate if inverted
           if (!card.upright) {
             cardImage = cardImage.rotate(180);
           }
 
-          // Add rounded corners
-          const roundedCorners = Buffer.from(
-            `<svg><rect x="0" y="0" width="${CARD_WIDTH}" height="${CARD_HEIGHT}" rx="12" ry="12"/></svg>`
-          );
+          // Add rounded corners and border
+          const roundedCornersSvg = `
+            <svg width="${CARD_WIDTH}" height="${CARD_HEIGHT}">
+              <rect x="0" y="0" width="${CARD_WIDTH}" height="${CARD_HEIGHT}"
+                    rx="10" ry="10" fill="white"/>
+            </svg>
+          `;
 
-          cardImage = cardImage.composite([{
-            input: roundedCorners,
-            blend: 'dest-in'
-          }]);
+          const cardBuffer = await cardImage
+            .composite([{
+              input: Buffer.from(roundedCornersSvg),
+              blend: 'dest-in'
+            }])
+            .toBuffer();
+
+          // Add subtle border/shadow effect
+          const borderSvg = `
+            <svg width="${CARD_WIDTH + 4}" height="${CARD_HEIGHT + 4}">
+              <rect x="0" y="0" width="${CARD_WIDTH + 4}" height="${CARD_HEIGHT + 4}"
+                    rx="12" ry="12" fill="rgba(212,175,55,0.5)"/>
+            </svg>
+          `;
+
+          const cardWithBorder = await sharp(Buffer.from(borderSvg))
+            .composite([{
+              input: cardBuffer,
+              top: 2,
+              left: 2
+            }])
+            .png()
+            .toBuffer();
 
           return {
-            buffer: await cardImage.toBuffer(),
-            x: startX + (index * (CARD_WIDTH + CARD_GAP)),
-            y: cardY
+            buffer: cardWithBorder,
+            x: startX + (index * (CARD_WIDTH + CARD_GAP)) - 2,
+            y: cardY - 2
           };
         } catch (err) {
           console.error(`[ImageGen] Error processing card ${index}:`, err);
@@ -78,87 +165,66 @@ export async function generateSharePreview(cards, frontendUrl = 'https://freetar
       throw new Error('No card images could be processed');
     }
 
-    // Create background with gradient effect
-    const background = await sharp({
-      create: {
-        width: OG_WIDTH,
-        height: OG_HEIGHT,
-        channels: 4,
-        background: BG_COLOR
-      }
-    })
-    .png()
-    .toBuffer();
+    // 3. Build composites array
+    const composites = [];
 
-    // Create gradient overlay
-    const gradientSvg = `
-      <svg width="${OG_WIDTH}" height="${OG_HEIGHT}">
-        <defs>
-          <radialGradient id="glow" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" style="stop-color:rgba(212,175,55,0.15)"/>
-            <stop offset="100%" style="stop-color:rgba(10,10,26,0)"/>
-          </radialGradient>
-        </defs>
-        <rect width="100%" height="100%" fill="url(#glow)"/>
-      </svg>
-    `;
-
-    // Composite all layers
-    const composites = [
-      { input: Buffer.from(gradientSvg), top: 0, left: 0 },
-      ...validCards.map(card => ({
+    // Add cards
+    validCards.forEach(card => {
+      composites.push({
         input: card.buffer,
         top: card.y,
         left: card.x
-      }))
-    ];
+      });
+    });
 
-    // Add position labels
+    // 4. Add position labels
     const positions = ['Pasado', 'Presente', 'Futuro'];
     for (let i = 0; i < validCards.length; i++) {
       const labelSvg = `
-        <svg width="${CARD_WIDTH}" height="30">
-          <text x="${CARD_WIDTH/2}" y="22"
-            font-family="Arial, sans-serif"
-            font-size="14"
+        <svg width="${CARD_WIDTH}" height="35">
+          <text x="${CARD_WIDTH/2}" y="25"
+            font-family="Georgia, serif"
+            font-size="16"
             fill="#d4af37"
             text-anchor="middle"
             font-weight="bold"
+            letter-spacing="2"
           >${positions[i] || ''}</text>
         </svg>
       `;
       composites.push({
         input: Buffer.from(labelSvg),
-        top: validCards[i].y + CARD_HEIGHT + 10,
-        left: validCards[i].x
+        top: validCards[i].y + CARD_HEIGHT + 15,
+        left: validCards[i].x + 2
       });
     }
 
-    // Add branding
-    const brandingSvg = `
-      <svg width="${OG_WIDTH}" height="60">
-        <text x="${OG_WIDTH/2}" y="40"
-          font-family="Georgia, serif"
-          font-size="24"
-          fill="#d4af37"
-          text-anchor="middle"
-          letter-spacing="3"
-        >FREE TAROT FUN</text>
-      </svg>
-    `;
-    composites.push({
-      input: Buffer.from(brandingSvg),
-      top: OG_HEIGHT - 70,
-      left: 0
-    });
+    // 5. Add watermark/logo
+    if (fs.existsSync(WATERMARK_PATH)) {
+      try {
+        const watermark = await sharp(WATERMARK_PATH)
+          .resize(200, 50, { fit: 'inside' })
+          .toBuffer();
 
-    // Generate final image
+        composites.push({
+          input: watermark,
+          top: OG_HEIGHT - 70,
+          left: Math.floor((OG_WIDTH - 200) / 2)
+        });
+      } catch (wmErr) {
+        console.warn('[ImageGen] Could not add watermark:', wmErr.message);
+      }
+    }
+
+    // 6. Generate final image
     const finalImage = await sharp(background)
       .composite(composites)
-      .png({ quality: 90 })
+      .png({ quality: 85, compressionLevel: 6 })
       .toBuffer();
 
-    console.log(`[ImageGen] Generated preview image: ${finalImage.length} bytes`);
+    const elapsed = Date.now() - startTime;
+    console.log(`[ImageGen] Generated preview image: ${finalImage.length} bytes in ${elapsed}ms`);
+
     return finalImage;
 
   } catch (error) {
