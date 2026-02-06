@@ -1683,19 +1683,7 @@ app.post("/api/chat/:chatId/share", async (req, res) => {
     // 7. Generate unique share_id
     const shareId = nanoid(10);
 
-    // 8. Generate preview image (async, don't block response)
-    let previewImageUrl = null;
-    try {
-      const frontendUrl = process.env.FRONTEND_URL || 'https://freetarot.fun';
-      const imageBuffer = await generateSharePreview(readingMsg.cards, frontendUrl);
-      previewImageUrl = await uploadToStorage(supabase, imageBuffer, shareId);
-      console.log(`[Share] Generated preview image: ${previewImageUrl}`);
-    } catch (imgError) {
-      console.error(`[Share] Error generating preview image (continuing without):`, imgError);
-      // Continue without image - not critical
-    }
-
-    // 9. Create share record
+    // 8. Create share record FIRST (fast response to user)
     const { data: shareResult, error: insertError } = await supabase.rpc('create_share', {
       p_share_id: shareId,
       p_chat_id: chatId,
@@ -1704,7 +1692,7 @@ app.post("/api/chat/:chatId/share", async (req, res) => {
       p_question: userQuestion,
       p_cards: readingMsg.cards,
       p_interpretation_summary: interpretationSummary,
-      p_preview_image_url: previewImageUrl
+      p_preview_image_url: null // Will be updated in background
     });
 
     if (insertError) {
@@ -1712,13 +1700,33 @@ app.post("/api/chat/:chatId/share", async (req, res) => {
       return res.status(500).json({ error: 'Error al crear el enlace compartido' });
     }
 
+    const shareUrl = `${process.env.SHARE_URL || 'https://share.freetarot.fun'}/${shareId}`;
     console.log(`[Share] Created share: ${shareId} for chat ${chatId}`);
 
+    // 9. Send response immediately (don't wait for image)
     res.json({
       shareId,
-      shareUrl: `${process.env.SHARE_URL || 'https://share.freetarot.fun'}/${shareId}`,
-      previewImageUrl
+      shareUrl,
+      previewImageUrl: null // Image generating in background
     });
+
+    // 10. Generate preview image in BACKGROUND (after response sent)
+    const frontendUrl = process.env.FRONTEND_URL || 'https://freetarot.fun';
+    generateSharePreview(readingMsg.cards, frontendUrl)
+      .then(imageBuffer => uploadToStorage(supabase, imageBuffer, shareId))
+      .then(previewImageUrl => {
+        // Update share record with image URL
+        return supabase
+          .from('shared_chats')
+          .update({ preview_image_url: previewImageUrl })
+          .eq('share_id', shareId);
+      })
+      .then(() => {
+        console.log(`[Share] Background image generated for: ${shareId}`);
+      })
+      .catch(imgError => {
+        console.error(`[Share] Background image generation failed for ${shareId}:`, imgError.message);
+      });
 
   } catch (error) {
     console.error('[Share] Error:', error);
