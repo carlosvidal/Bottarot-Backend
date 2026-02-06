@@ -1611,6 +1611,69 @@ app.get("/api/admin/stats", adminAuth, async (req, res) => {
   }
 });
 
+// Get all users list
+app.get("/api/admin/users", adminAuth, async (req, res) => {
+  try {
+    // Get all users from Supabase Auth
+    const { data: authData } = await supabase.auth.admin.listUsers();
+    const authUsers = authData?.users || [];
+
+    // Get user profiles from database
+    const { data: profiles } = await supabase
+      .from('user_profiles')
+      .select('user_id, display_name, gender, date_of_birth, language, timezone');
+
+    const profileMap = {};
+    profiles?.forEach(p => {
+      profileMap[p.user_id] = p;
+    });
+
+    // Get active subscriptions
+    const { data: subscriptions } = await supabase
+      .from('user_subscriptions')
+      .select('user_id, plan_id, status, subscription_end_date')
+      .eq('status', 'active')
+      .gt('subscription_end_date', new Date().toISOString());
+
+    const subMap = {};
+    subscriptions?.forEach(s => {
+      subMap[s.user_id] = s;
+    });
+
+    // Get chat counts per user
+    const { data: chatCounts } = await supabase
+      .from('chats')
+      .select('user_id');
+
+    const chatCountMap = {};
+    chatCounts?.forEach(c => {
+      chatCountMap[c.user_id] = (chatCountMap[c.user_id] || 0) + 1;
+    });
+
+    // Combine all data
+    const users = authUsers.map(u => ({
+      id: u.id,
+      email: u.email,
+      name: profileMap[u.id]?.display_name || '-',
+      language: profileMap[u.id]?.language || '-',
+      created_at: u.created_at,
+      last_sign_in: u.last_sign_in_at,
+      is_premium: !!subMap[u.id],
+      subscription_end: subMap[u.id]?.subscription_end_date || null,
+      chat_count: chatCountMap[u.id] || 0,
+      provider: u.app_metadata?.provider || 'email'
+    }));
+
+    // Sort by created_at descending (newest first)
+    users.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+    res.json({ users });
+  } catch (err) {
+    console.error("Admin error:", err);
+    res.status(500).json({ error: "Error fetching users" });
+  }
+});
+
 // Clean up pending transactions (admin)
 app.delete("/api/admin/pending-transactions", adminAuth, async (req, res) => {
   try {
