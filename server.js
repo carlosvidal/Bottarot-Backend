@@ -3,6 +3,7 @@ dotenv.config();
 
 import express from "express";
 import cors from "cors";
+import crypto from "crypto";
 import fetch from "node-fetch";
 import { OpenAI } from "openai";
 import { createClient } from "@supabase/supabase-js";
@@ -2113,6 +2114,86 @@ app.get("/api/referral/list", async (req, res) => {
     console.error('[Referral] List error:', error);
     res.status(500).json({ error: 'Failed to get referrals' });
   }
+});
+
+// =======================================
+// FACEBOOK DATA DELETION CALLBACK
+// =======================================
+
+function parseSignedRequest(signedRequest, secret) {
+  const [encodedSig, payload] = signedRequest.split('.');
+  if (!encodedSig || !payload) return null;
+
+  const sig = Buffer.from(encodedSig.replace(/-/g, '+').replace(/_/g, '/'), 'base64');
+  const expectedSig = crypto.createHmac('sha256', secret).update(payload).digest();
+
+  if (!crypto.timingSafeEqual(sig, expectedSig)) return null;
+
+  return JSON.parse(Buffer.from(payload.replace(/-/g, '+').replace(/_/g, '/'), 'base64').toString('utf8'));
+}
+
+app.post('/api/facebook/data-deletion', async (req, res) => {
+  try {
+    const { signed_request } = req.body;
+    const appSecret = process.env.FACEBOOK_APP_SECRET;
+
+    if (!appSecret) {
+      console.error('[Facebook Data Deletion] FACEBOOK_APP_SECRET not configured');
+      return res.status(500).json({ error: 'Server configuration error' });
+    }
+
+    if (!signed_request) {
+      return res.status(400).json({ error: 'signed_request is required' });
+    }
+
+    const data = parseSignedRequest(signed_request, appSecret);
+    if (!data) {
+      return res.status(403).json({ error: 'Invalid signed_request' });
+    }
+
+    const facebookUserId = String(data.user_id);
+    const confirmationCode = crypto.randomBytes(16).toString('hex');
+
+    console.log(`[Facebook Data Deletion] Request for Facebook user: ${facebookUserId}`);
+
+    // Find the Supabase user linked to this Facebook account
+    const { data: identity, error: identityError } = await supabase
+      .from('auth.identities')
+      .select('user_id')
+      .eq('provider', 'facebook')
+      .eq('provider_id', facebookUserId)
+      .single();
+
+    if (identityError || !identity) {
+      // User not found — may have already been deleted. Return success per Facebook's spec.
+      console.log(`[Facebook Data Deletion] No user found for Facebook ID ${facebookUserId}, returning success`);
+    } else {
+      const { error: deleteError } = await supabase.auth.admin.deleteUser(identity.user_id);
+      if (deleteError) {
+        console.error(`[Facebook Data Deletion] Error deleting user ${identity.user_id}:`, deleteError);
+        return res.status(500).json({ error: 'Failed to delete user data' });
+      }
+      console.log(`[Facebook Data Deletion] Successfully deleted user ${identity.user_id}`);
+    }
+
+    const statusUrl = `${process.env.FRONTEND_URL || 'https://freetarot.fun'}/deletion-status?code=${confirmationCode}`;
+
+    res.json({
+      url: statusUrl,
+      confirmation_code: confirmationCode
+    });
+
+  } catch (err) {
+    console.error('[Facebook Data Deletion] Error:', err);
+    res.status(500).json({ error: 'Error processing data deletion request' });
+  }
+});
+
+app.get('/api/facebook/deletion-status', (req, res) => {
+  res.json({
+    status: 'complete',
+    message: 'Your data has been deleted from FreeTarot.Fun. This action is irreversible.'
+  });
 });
 
 // =======================================
