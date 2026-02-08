@@ -1616,7 +1616,14 @@ app.get("/api/admin/stats", adminAuth, async (req, res) => {
 app.get("/api/admin/users", adminAuth, async (req, res) => {
   try {
     // Get all users from Supabase Auth
-    const { data: authData } = await supabase.auth.admin.listUsers();
+    const { data: authData, error: authError } = await supabase.auth.admin.listUsers();
+
+    if (authError) {
+      console.error("Error listing users:", authError);
+      return res.status(500).json({ error: "Error fetching auth users" });
+    }
+
+    console.log("[Admin] listUsers result:", JSON.stringify(authData, null, 2));
     const authUsers = authData?.users || [];
 
     // Get user profiles from database
@@ -1668,6 +1675,7 @@ app.get("/api/admin/users", adminAuth, async (req, res) => {
     // Sort by created_at descending (newest first)
     users.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
 
+    console.log(`[Admin] Returning ${users.length} users`);
     res.json({ users });
   } catch (err) {
     console.error("Admin error:", err);
